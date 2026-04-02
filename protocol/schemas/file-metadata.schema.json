@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://waxwing-mesh/schemas/file-metadata/v1",
+  "title": "Waxwing File Metadata",
+  "description": "Metadata record attached to every file in the Waxwing Mesh. Encoded as CBOR on the wire; this schema uses JSON for human readability. Binary fields are shown as base64url strings here but transmitted as CBOR byte strings.",
+  "type": "object",
+  "required": ["id", "v", "timestamp", "mime", "size", "routing", "ttl", "origin_tpk"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "SHA-256 hash of raw file content, base64url encoded (32 bytes / 43 chars). This is the canonical file identifier.",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "v": {
+      "type": "integer",
+      "description": "Metadata schema version. Current value: 1.",
+      "const": 1
+    },
+    "cpk": {
+      "type": ["string", "null"],
+      "description": "Creator Content Identity public key (Ed25519, 32 bytes), base64url encoded. Null or absent for anonymous content.",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "csig": {
+      "type": "string",
+      "description": "Ed25519 signature (64 bytes) by creator over signed_payload. See PROTOCOL.md §5.2 for payload definition. Required if cpk is present.",
+      "pattern": "^[A-Za-z0-9_-]{86}$"
+    },
+    "timestamp": {
+      "type": "integer",
+      "description": "Unix timestamp (seconds since epoch) of content creation.",
+      "minimum": 0
+    },
+    "mime": {
+      "type": "string",
+      "description": "MIME type of the file content.",
+      "examples": ["text/plain", "audio/mp4", "video/mp4", "image/jpeg", "application/pdf"]
+    },
+    "size": {
+      "type": "integer",
+      "description": "File size in bytes.",
+      "minimum": 1
+    },
+    "title": {
+      "type": "string",
+      "description": "Optional human-readable title for the content.",
+      "maxLength": 128
+    },
+    "tags": {
+      "type": "array",
+      "description": "Optional content tags for filtering and recommendation. Lowercase, no spaces.",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9_-]+$",
+        "maxLength": 32
+      },
+      "maxItems": 16
+    },
+    "lang": {
+      "type": "string",
+      "description": "Optional BCP-47 language code.",
+      "examples": ["en", "fr", "es", "zh", "ar"]
+    },
+    "routing": {
+      "type": "string",
+      "description": "Routing type: 'broadcast' spreads to all; 'addressed' targets a specific recipient but is still forwarded by intermediaries.",
+      "enum": ["broadcast", "addressed"]
+    },
+    "recipient": {
+      "type": "string",
+      "description": "Target Content Identity public key (Ed25519, 32 bytes), base64url encoded. Required if routing is 'addressed'; omitted for broadcast.",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "ttl": {
+      "type": "integer",
+      "description": "Remaining hop count. Decremented at each forward. Files with ttl=0 MUST NOT be forwarded.",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "origin_tpk": {
+      "type": "string",
+      "description": "Transport Identity public key of the node that first introduced this file into the mesh (32 bytes), base64url encoded.",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "fwd_decl": {
+      "type": "object",
+      "description": "Most recent Forwarding Declaration from an attended node. Present when any attended node has reviewed and chosen to Recommend or Pass Along this content. Absent if the content has only passed through unattended relays or has not yet been reviewed by any attended node.",
+      "required": ["fwd_tpk", "action", "timestamp", "sig"],
+      "properties": {
+        "fwd_tpk": {
+          "type": "string",
+          "description": "Transport public key of the attended node that issued this declaration (32 bytes), base64url encoded.",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "action": {
+          "type": "integer",
+          "description": "The human review decision: +2 or +1 = Recommend, 0 = Pass Along.",
+          "enum": [-1, 0, 1, 2]
+        },
+        "timestamp": {
+          "type": "integer",
+          "description": "Unix timestamp when the attended node reviewed and made this decision.",
+          "minimum": 0
+        },
+        "sig": {
+          "type": "string",
+          "description": "Ed25519 signature (64 bytes) over CBOR([file_id, fwd_tpk, action, timestamp]), base64url encoded.",
+          "pattern": "^[A-Za-z0-9_-]{86}$"
+        }
+      }
+    }
+  },
+  "if": {
+    "properties": { "routing": { "const": "addressed" } }
+  },
+  "then": {
+    "required": ["recipient"]
+  },
+  "if": {
+    "properties": { "cpk": { "type": "string" } }
+  },
+  "then": {
+    "required": ["csig"]
+  }
+}
