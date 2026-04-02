@@ -1,0 +1,14 @@
+# Waxwing Mesh Tools — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# BLE scanner and GATT client
+bleak>=0.21.0
+
+# CBOR encoding/decoding (used throughout the protocol)
+cbor2>=5.4.0
+
+# Ed25519 signing and verification
+cryptography>=41.0.0
+
+# BIP-39 mnemonic generation and validation (for Content Identity derivation)
+mnemonic>=0.20
