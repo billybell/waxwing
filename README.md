@@ -99,14 +99,12 @@ waxwing/
 ├── README.md               # This file
 ├── PROTOCOL.md             # Full protocol specification (start here)
 ├── protocol/
-│   ├── GATT.md             # BLE GATT service and characteristic detail
-│   ├── IDENTITY.md         # Two-layer identity and key formats
-│   ├── TRANSFER.md         # Chunked BLE transfer and WiFi upgrade
-│   ├── PROPAGATION.md      # Forwarding rules, tiers, reputation model
-│   ├── GAMIFICATION.md     # Social layer: encounter ledger, sync attestation, geolocation
+│   ├── GAMIFICATION.md     # Social layer: encounter ledger, sync attestation, geolocation, trust graph
 │   └── schemas/
 │       ├── file-metadata.schema.json
 │       └── manifest.schema.json
+│   # Note: GATT.md, IDENTITY.md, TRANSFER.md, and PROPAGATION.md are planned as
+│   # standalone reference files. Their content is currently covered in PROTOCOL.md.
 ├── firmware/
 │   ├── pico-w/             # Reference node — MicroPython (Pico W)
 │   ├── flipper/            # Flipper Zero app
@@ -114,9 +112,10 @@ waxwing/
 ├── mobile/                 # Flutter companion app (iOS primary, Android)
 ├── tools/                  # BLE sniffers, test harnesses, manifest generators
 └── docs/
-    ├── architecture.md     # Extended architecture discussion
+    ├── architecture.md     # Extended architecture discussion (planned)
     └── decisions/          # Architecture Decision Records (ADRs)
-        └── 001-device-first-architecture.md
+        ├── 001-device-first-architecture.md
+        └── 002-gamification-opt-in.md
 ```
 
 ---

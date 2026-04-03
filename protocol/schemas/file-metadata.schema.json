@@ -94,8 +94,8 @@
         },
         "action": {
           "type": "integer",
-          "description": "The human review decision: +2 or +1 = Recommend, 0 = Pass Along.",
-          "enum": [-1, 0, 1, 2]
+          "description": "The human review decision: +2 or +1 = Recommend, 0 = Pass Along. Hold (−1) and Reject (−2) never produce a Forwarding Declaration.",
+          "enum": [0, 1, 2]
         },
         "timestamp": {
           "type": "integer",
@@ -110,16 +110,24 @@
       }
     }
   },
-  "if": {
-    "properties": { "routing": { "const": "addressed" } }
-  },
-  "then": {
-    "required": ["recipient"]
-  },
-  "if": {
-    "properties": { "cpk": { "type": "string" } }
-  },
-  "then": {
-    "required": ["csig"]
-  }
+  "allOf": [
+    {
+      "if": {
+        "properties": { "routing": { "const": "addressed" } },
+        "required": ["routing"]
+      },
+      "then": {
+        "required": ["recipient"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "cpk": { "type": "string" } },
+        "required": ["cpk"]
+      },
+      "then": {
+        "required": ["csig"]
+      }
+    }
+  ]
 }
