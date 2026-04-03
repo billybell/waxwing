@@ -218,7 +218,7 @@ Verification steps:
 
 Nodes without GPS can infer their approximate location by scanning for nearby WiFi access points and recording a fingerprint: a list of SSID and BSSID pairs weighted by RSSI. This fingerprint can later be resolved to geographic coordinates by the companion app using iOS Core Location or a WiFi positioning database.
 
-**This feature is opt-in and disabled by default.** See Section 6 for privacy implications.
+**This feature is opt-in and disabled by default.** See Section 9 for privacy implications.
 
 ### 4.2 Fingerprint Schema
 
@@ -374,9 +374,22 @@ When `social.attestation` is enabled alongside `social.endorsements`, endorsemen
   "encounter_count": <uint>,
   "attest_hash": <bytes>,        // SHA-256 of the most recent full SyncAttestation record
                                  // omitted if social.attestation is disabled
-  "endorser_sig": <bytes>        // Signs over EndorsementPayload including attest_hash
+  "endorser_sig": <bytes>        // Signs over AttestationEndorsementPayload (see below)
 }
 ```
+
+When `attest_hash` is present, a different signing payload is used:
+
+```
+AttestationEndorsementPayload = CBOR([
+  endorsed_tpk,
+  timestamp,
+  encounter_count,
+  attest_hash
+])
+```
+
+This ensures the attestation hash is cryptographically bound to the endorsement. A verifier can distinguish attestation-backed endorsements from bare endorsements by the presence of `attest_hash`, and must use the appropriate payload when checking the signature.
 
 A receiving node that also holds a copy of the referenced attestation (possible if both have synced with a mutual peer) can verify the claim independently. A receiving node that does not hold the attestation can still accept the endorsement at face value — but the companion app marks attestation-backed endorsements distinctly in the trust path display (solid line vs dashed line in the community graph).
 
@@ -474,7 +487,7 @@ Unattended nodes (Relay, Publisher, Archive) appear in the community graph with 
 | Publisher | Arrow / chevron | Pushes content only; a channel or bulletin board |
 | Archive | Cylinder | Collects content; does not forward |
 
-Reputation tier colour coding is the same as for human-operated nodes. Tapping an unattended node shows its variant, its configured filter thresholds (if exposed in Device Identity), and its transport reputation. The trust path chain works the same way — an unattended node can endorse and be endorsed.
+Reputation tier colour coding is the same as for human-operated nodes. Tapping an unattended node shows its variant, its configured filter thresholds (if exposed in Device Identity), and its transport reputation. The trust path chain applies to unattended nodes — they can be endorsed by attended peers that have synced with them, but they do not themselves generate endorsements (see PROTOCOL.md §10.7).
 
 Unattended nodes that your node has opted out of syncing with (`sync.unattended_nodes: never`) are shown in the graph as faded/dimmed, so you can see they exist in the network without implying you exchange data with them.
 
@@ -547,7 +560,7 @@ Each leaderboard shows the top 20 nodes in the selected category. The viewer's o
 
 Tapping an entry opens the Node Detail panel from the community graph.
 
-### 7.3 Unattended Nodes and the Leaderboard
+### 7.4 Unattended Nodes and the Leaderboard
 
 Unattended nodes are excluded from all leaderboard categories by default. Competing against automated relay nodes is not meaningful for human participants — a Relay node can exchange many more bytes than a carried node simply by virtue of being plugged in somewhere busy.
 
@@ -555,7 +568,7 @@ Instead, unattended nodes appear in a dedicated **Infrastructure Panel** beneath
 
 The one exception is the **Most Connected** category, where unattended nodes MAY appear if they have accumulated a substantial web of endorsements — since being a well-connected hub in the network is a meaningful contribution regardless of whether it is automated. This is optional and can be toggled off in companion app settings.
 
-### 7.4 Leaderboard as Motivation
+### 7.5 Leaderboard as Motivation
 
 The leaderboard is the primary gamification hook for encouraging users to take their node out into the world. The design philosophy:
 
@@ -567,7 +580,7 @@ The leaderboard is the primary gamification hook for encouraging users to take t
 
 **Avoid perverse incentives.** No category rewards raw encounter count alone (which would encourage meaningless brief encounters). Every category rewards something that benefits the network: content quality, generosity, reach, or exploration.
 
-### 7.5 Milestone Badges
+### 7.6 Milestone Badges
 
 In addition to the ranked leaderboard, the companion app awards milestone badges to the owner's node for achievements. Badges are local, never transmitted, and never affect protocol behaviour. They exist purely as a personal record of participation.
 
@@ -595,7 +608,7 @@ In addition to the ranked leaderboard, the companion app awards milestone badges
 
 > *Note: This section describes the full set of social screens. The Community Graph (§6) and Leaderboard (§7) are detailed in those sections above; what follows covers the remaining screens.*
 
-### 5.1 Sync Map
+### 8.1 Sync Map
 
 A map view showing approximate locations where sync events occurred. Each sync event is plotted as a dot. Tapping a dot opens the encounter detail for that session.
 
@@ -608,13 +621,13 @@ The map is generated entirely from local data on the companion app. No location 
 
 If location features are disabled, the Sync Map screen shows a message explaining the feature and how to enable it, with a clear description of what data would be stored.
 
-### 5.2 Network Graph
+### 8.2 Network Graph
 
 A force-directed graph showing peer nodes as vertices and sync relationships as edges. Edge weight is proportional to total bytes exchanged. Vertices are labelled with the peer node's display name (if set) or the first 8 characters of their Transport Public Key.
 
-Users can tap a vertex to open the Peer Detail screen (Section 5.4).
+Users can tap a vertex to open the Peer Detail screen (Section 8.4).
 
-### 5.3 Sync History
+### 8.3 Sync History
 
 A reverse-chronological list of all sync sessions. Each entry shows:
 - Peer node name / key prefix
@@ -625,7 +638,7 @@ A reverse-chronological list of all sync sessions. Each entry shows:
 
 Tapping an entry shows full detail and offers the option to export the attestation as a signed JSON document.
 
-### 5.4 Peer Detail
+### 8.4 Peer Detail
 
 For a specific peer node:
 - Node name and Transport Key (abbreviated + copyable)
@@ -636,7 +649,7 @@ For a specific peer node:
 - Option to view attested sync records
 - Option to manually trust / block this transport identity
 
-### 5.5 Statistics Dashboard
+### 8.5 Statistics Dashboard
 
 An aggregate view for the owner's node:
 
@@ -649,7 +662,7 @@ An aggregate view for the owner's node:
 
 Milestone badges are computed locally and never transmitted to any network. They are opt-outable independently of the rest of the social layer.
 
-### 5.6 Attestation Export
+### 8.6 Attestation Export
 
 From any attested sync record, the owner can export a human-readable + machine-verifiable attestation document (JSON format):
 
@@ -687,7 +700,7 @@ The exported document is self-contained and verifiable by anyone with a standard
 
 ## 9. Privacy Considerations and Opt-Out
 
-### 6.1 Feature Flags
+### 9.1 Feature Flags
 
 Each social feature has an independent opt-in flag stored in node configuration (set via the companion app Device Config characteristic):
 
@@ -703,11 +716,9 @@ Each social feature has an independent opt-in flag stored in node configuration 
 
 Enabling `social.endorsements` requires `social.encounter_ledger`. Enabling `social.geolocation` requires `social.wifi_fingerprint`. All other flags are independent.
 
-Enabling `social.geolocation` requires `social.wifi_fingerprint`. All other flags are independent.
-
 A user running in a hostile environment SHOULD disable all social flags. With all flags off, the node's behaviour is identical to a base protocol node with no additional state recorded.
 
-### 6.2 What Adversaries Can Learn
+### 9.2 What Adversaries Can Learn
 
 **If only `social.encounter_ledger` is enabled and node is seized:**
 An adversary learns which Transport Public Keys this node has synced with and how much data was exchanged. They do not learn the geographic location of any sync event. They do not learn Content Identity keys (these are never stored on the node unless the user chose stored-mode identity).
@@ -721,7 +732,7 @@ An adversary gains a list of attested syncs with timestamps and peer Transport P
 **If both `social.attestation` and `social.wifi_fingerprint` are enabled and node is seized:**
 An adversary gains a list of attested syncs with timestamps, peer Transport Public Keys, and WiFi fingerprints that can be geolocated. This is the highest-risk configuration and MUST NOT be used in hostile environments. The combination provides strong trust propagation and a rich sync map, but at a significant privacy cost.
 
-### 6.3 Data Minimisation
+### 9.3 Data Minimisation
 
 Regardless of opt-in status, the following data is NEVER stored by the social layer:
 
@@ -731,7 +742,7 @@ Regardless of opt-in status, the following data is NEVER stored by the social la
 - Precise GPS coordinates (only WiFi fingerprints, which require a database to resolve)
 - Any data that leaves the device without explicit per-action user consent
 
-### 6.4 Companion App Location Permission
+### 9.4 Companion App Location Permission
 
 The companion app requests iOS location permission only if `social.geolocation` is enabled by the user. The permission prompt explains: "Waxwing uses location to show you a map of where your node has synced with other devices. Location data stays on your phone and is never uploaded." The app uses "When In Use" location authorization, not "Always" — geolocation resolution happens when the user is actively viewing the sync map.
 
@@ -739,7 +750,7 @@ The companion app requests iOS location permission only if `social.geolocation` 
 
 ## 10. GATT Additions
 
-### 7.1 Sync Attestation Characteristic (`CE57580B-494E-4700-8000-00805F9B34FB`)
+### 10.1 Sync Attestation Characteristic (`CE57580B-494E-4700-8000-00805F9B34FB`)
 
 **Properties:** WRITE, NOTIFY
 

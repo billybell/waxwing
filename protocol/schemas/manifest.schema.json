@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://waxwing-mesh/schemas/manifest/v1",
   "title": "Waxwing Node Manifest",
-  "description": "The complete list of content a node has available to share. Transmitted as a CBOR-encoded array over the Manifest Chunk characteristic. May be large; read in chunks using offset mechanism (see PROTOCOL.md §6).",
+  "description": "The complete list of content a node has available to share. Transmitted as a CBOR-encoded array over the Manifest Chunk characteristic. May be large; read in chunks using offset mechanism (see PROTOCOL.md §6). The manifest MUST be sorted by timestamp descending (newest first) so that partial reads yield the most recent content.",
+  "$comment": "Sort order is normative: newest-first ensures partial reads are always useful.",
   "type": "array",
   "items": {
     "$ref": "file-metadata.schema.json"
-  },
-  "description": "Each element is a file metadata record. The manifest MUST be sorted by timestamp descending (newest first) so that partial reads yield the most recent content."
+  }
 }

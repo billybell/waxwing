@@ -147,7 +147,7 @@ The short Transport Public Key prefix in the local name allows scanning peers to
 
 ### 3.3 Characteristics
 
-All characteristics use 128-bit UUIDs with the Waxwing base. See Section 15 for the full UUID registry.
+All characteristics use 128-bit UUIDs with the Waxwing base. See Section 16 for the full UUID registry.
 
 #### 3.3.1 Device Identity (`CE575801-...`)
 
@@ -609,7 +609,7 @@ Ratings are not kept private. When a node forwards a file's metadata, it MAY att
 ```
 {
   "tpk": <bytes>,       // Transport public key of the rater's node
-  "rating": <int>,      // -2 to +2
+  "rating": <int>,      // +2, +1, or −2 only (Hold and Pass Along are not gossiped; see §3.3.7)
   "timestamp": <uint>,  // When the rating was submitted
   "sig": <bytes>        // Ed25519 signature over (file_id + rating + timestamp) with tpk private key
 }
@@ -1035,9 +1035,7 @@ Archive nodes do participate in manifest exchange normally — they advertise th
 
 ## 15. Security Considerations
 
-> *Note: sections 15–18 were previously numbered 14–17.*
-
-### 14.1 Threat Model
+### 15.1 Threat Model
 
 Waxwing Mesh is designed to operate in adversarial environments. The expected threats include:
 
@@ -1048,7 +1046,7 @@ Waxwing Mesh is designed to operate in adversarial environments. The expected th
 - **Sybil attack:** Creating many node identities to inflate reputation scores.
 - **Unattended node abuse:** Deploying unattended relay nodes with permissive thresholds to amplify spam at machine speed.
 
-### 14.2 Mitigations
+### 15.2 Mitigations
 
 **Against surveillance via BLE:**
 Transport Identity public keys in advertisements are pseudonymous and rotatable. The advertisement payload contains no personally identifying information. Nodes SHOULD periodically rotate their BLE MAC address (standard BLE privacy feature) in addition to allowing Transport Identity rotation.
@@ -1068,7 +1066,7 @@ Reputation scores from unknown nodes are treated with low initial trust. Reputat
 **Against unattended node abuse:**
 Unattended nodes are explicitly flagged in their BLE advertisement, allowing peers to apply different trust rules or opt out entirely. The default peer setting (`sync.unattended_nodes: trusted_only`) means new unattended nodes with zero reputation are skipped until they build a positive track record. An unattended node used to amplify spam will accumulate negative transport reputation from downstream rejections and will eventually be quarantined by the network. The operator must physically intervene to reset it, raising the cost of this attack vector above casual use.
 
-### 14.3 Limitations
+### 15.3 Limitations
 
 - BLE itself is not encrypted at the Waxwing layer; it relies on BLE's built-in link-layer encryption when pairing is used. Mesh connections (node-to-node) use unauthenticated BLE connections; file content and metadata are not additionally encrypted in v0.1.
 - Addressed content (for a specific recipient) does not provide end-to-end encryption in v0.1. End-to-end encryption for addressed content is planned for v0.2.
@@ -1114,8 +1112,6 @@ The maximum size of any single characteristic read or write is bounded by the BL
 
 ---
 
----
-
 ## 18. Social Layer
 
 The optional social and gamification layer is specified separately in `protocol/GAMIFICATION.md`. It covers:
@@ -1128,9 +1124,10 @@ The optional social and gamification layer is specified separately in `protocol/
 
 All social features are additive and backward-compatible. Nodes with social features disabled are fully interoperable with nodes that have them enabled.
 
-Two additional characteristics support the social layer (see `GAMIFICATION.md §7`):
+Three additional characteristics support the social layer (see `GAMIFICATION.md §10`):
 - Sync Attestation: `CE57580B-494E-4700-8000-00805F9B34FB`
 - Encounter Ledger: `CE57580C-494E-4700-8000-00805F9B34FB`
+- Endorsement Exchange: `CE57580D-494E-4700-8000-00805F9B34FB`
 
 ---
 
