@@ -22,6 +22,10 @@ CHAR_PAIRING_AUTH       = "CE57580A-494E-4700-8000-00805F9B34FB"
 CHAR_SYNC_ATTEST        = "CE57580B-494E-4700-8000-00805F9B34FB"
 CHAR_ENCOUNTER_LEDGER   = "CE57580C-494E-4700-8000-00805F9B34FB"
 
+# Phase 1.5: File management characteristics (companion → node file push/pull)
+CHAR_FILE_COMMAND       = "CE57580D-494E-4700-8000-00805F9B34FB"
+CHAR_FILE_RESPONSE      = "CE57580E-494E-4700-8000-00805F9B34FB"
+
 # ---------------------------------------------------------------------------
 # Device capability flags (bitmask in device identity)
 # ---------------------------------------------------------------------------

@@ -16,6 +16,8 @@ import machine
 
 from waxwing import identity as id_module
 from waxwing import messages
+from waxwing import filestore
+from waxwing import cbor
 from waxwing.ble import WaxwingBLE
 
 # ---------------------------------------------------------------------------
@@ -60,6 +62,71 @@ def _on_write(conn_handle, char_uuid, data):
         char_uuid[-8:], len(data), data[:16]))
 
 
+def _on_file_command(data):
+    """
+    Handle a file management command from the companion app.
+    Expects CBOR-encoded command, returns CBOR-encoded response.
+
+    Commands:
+      {"cmd": "ls"}
+      {"cmd": "read", "name": "foo.txt"}
+      {"cmd": "write", "name": "foo.txt", "data": "Hello!"}
+      {"cmd": "delete", "name": "foo.txt"}
+    """
+    try:
+        cmd_map = cbor.loads(data)
+        cmd = cmd_map.get("cmd", "")
+        print("[main] File cmd: {}".format(cmd))
+
+        if cmd == "ls":
+            files = filestore.list_files()
+            return cbor.dumps({"cmd": "ls", "files": files})
+
+        elif cmd == "read":
+            name = cmd_map.get("name", "")
+            try:
+                content = filestore.read_file(name)
+                return cbor.dumps({
+                    "cmd": "read", "name": name, "data": content
+                })
+            except OSError:
+                return cbor.dumps({
+                    "cmd": "read", "error": "File not found: " + name
+                })
+
+        elif cmd == "write":
+            name = cmd_map.get("name", "")
+            content = cmd_map.get("data", "")
+            try:
+                filestore.write_file(name, content)
+                return cbor.dumps({
+                    "cmd": "write", "name": name, "ok": True
+                })
+            except (ValueError, OSError) as e:
+                return cbor.dumps({
+                    "cmd": "write", "error": str(e)
+                })
+
+        elif cmd == "delete":
+            name = cmd_map.get("name", "")
+            try:
+                filestore.delete_file(name)
+                return cbor.dumps({
+                    "cmd": "delete", "name": name, "ok": True
+                })
+            except OSError:
+                return cbor.dumps({
+                    "cmd": "delete", "error": "File not found: " + name
+                })
+
+        else:
+            return cbor.dumps({"error": "Unknown command: " + str(cmd)})
+
+    except Exception as e:
+        print("[main] File command error: {}".format(e))
+        return cbor.dumps({"error": str(e)})
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -88,6 +155,7 @@ def main():
         ble.on_connect(_on_connect)
         ble.on_disconnect(_on_disconnect)
         ble.on_write(_on_write)
+        ble.on_file_command(_on_file_command)
         ble.start()
     except Exception as e:
         print("[main] FATAL: BLE init failed: {}".format(e))

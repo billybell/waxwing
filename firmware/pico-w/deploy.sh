@@ -46,11 +46,19 @@ run() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Ensure /waxwing directory exists on device
+# 1. Ensure directories exist on device
 # ---------------------------------------------------------------------------
-echo "[1/4] Creating /waxwing/ directory on device..."
+echo "[1/4] Creating directories on device..."
 # mkdir returns an error if it already exists; suppress that
-$MPR exec "import os; os.mkdir('waxwing')" 2>/dev/null || true
+$MPR exec "
+import os
+for d in ('waxwing', 'files'):
+    try:
+        os.mkdir(d)
+        print('  Created /' + d + '/')
+    except OSError:
+        print('  /' + d + '/ already exists')
+" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 2. Upload waxwing package files
@@ -63,6 +71,7 @@ WAXWING_FILES=(
     "waxwing/identity.py"
     "waxwing/messages.py"
     "waxwing/ble.py"
+    "waxwing/filestore.py"
 )
 
 for f in "${WAXWING_FILES[@]}"; do
