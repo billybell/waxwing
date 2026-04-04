@@ -116,6 +116,9 @@ class WaxwingBLE:
         self._on_disconnect_cb = None
         self._on_write_cb      = None
 
+        # File command handler (set by main.py)
+        self._on_file_cmd_cb   = None
+
     # -----------------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------------
@@ -131,6 +134,10 @@ class WaxwingBLE:
     def on_write(self, cb):
         """Register callback: cb(conn_handle, char_uuid_str, data_bytes)"""
         self._on_write_cb = cb
+
+    def on_file_command(self, cb):
+        """Register callback: cb(data_bytes) -> response_bytes"""
+        self._on_file_cmd_cb = cb
 
     def start(self):
         """Activate BLE, register GATT service, and start advertising."""
@@ -170,41 +177,32 @@ class WaxwingBLE:
 
     def _register_services(self):
         """
-        Register the Waxwing GATT service with all 12 characteristics.
-        MicroPython bluetooth.BLE.gatts_register_services() takes a list of
-        (service_uuid, [(char_uuid, flags), ...]) tuples.
+        Register the Waxwing GATT service with active characteristics.
+
+        NOTE: The Pico W BLE stack has a limited attribute handle table
+        (~20 handles). Each characteristic consumes 2 handles (declaration
+        + value) plus 1 more for a CCCD if it supports NOTIFY/INDICATE.
+        Registering all 14 characteristics exceeds this limit and causes
+        the later ones to be silently invisible to the central.
+
+        We only register characteristics that are actually implemented.
+        Stub characteristics for future phases (manifest, transfer, rating,
+        reputation, WiFi, pairing, sync, encounter) will be added back
+        when they have real handlers.
         """
         from .constants import (
             SERVICE_UUID,
             CHAR_DEVICE_IDENTITY,
-            CHAR_MANIFEST_META,
-            CHAR_MANIFEST_CHUNK,
-            CHAR_TRANSFER_REQUEST,
-            CHAR_TRANSFER_DATA,
-            CHAR_TRANSFER_ACK,
-            CHAR_RATING_SUBMIT,
-            CHAR_REP_EXCHANGE,
-            CHAR_WIFI_NEGOTIATE,
-            CHAR_PAIRING_AUTH,
-            CHAR_SYNC_ATTEST,
-            CHAR_ENCOUNTER_LEDGER,
+            CHAR_FILE_COMMAND,
+            CHAR_FILE_RESPONSE,
         )
 
-        # Ordered list of (uuid, flags) for each characteristic.
-        # The order must match the unpacking of gatts_register_services() result.
+        # Only register characteristics that have real implementations.
+        # Handles budget: 1 (service) + 2 (identity) + 2 (file_cmd) + 3 (file_resp w/ CCCD) = 8
         char_defs = [
             (CHAR_DEVICE_IDENTITY,   _FLAG_READ),
-            (CHAR_MANIFEST_META,     _FLAG_READ | _FLAG_NOTIFY),
-            (CHAR_MANIFEST_CHUNK,    _FLAG_READ | _FLAG_WRITE),
-            (CHAR_TRANSFER_REQUEST,  _FLAG_WRITE),
-            (CHAR_TRANSFER_DATA,     _FLAG_READ | _FLAG_NOTIFY),
-            (CHAR_TRANSFER_ACK,      _FLAG_WRITE),
-            (CHAR_RATING_SUBMIT,     _FLAG_WRITE),
-            (CHAR_REP_EXCHANGE,      _FLAG_READ | _FLAG_NOTIFY),
-            (CHAR_WIFI_NEGOTIATE,    _FLAG_READ | _FLAG_WRITE),
-            (CHAR_PAIRING_AUTH,      _FLAG_WRITE),
-            (CHAR_SYNC_ATTEST,       _FLAG_READ | _FLAG_WRITE),
-            (CHAR_ENCOUNTER_LEDGER,  _FLAG_READ),
+            (CHAR_FILE_COMMAND,      _FLAG_WRITE),
+            (CHAR_FILE_RESPONSE,     _FLAG_READ | _FLAG_NOTIFY),
         ]
 
         # Build the service tuple expected by MicroPython
@@ -214,27 +212,19 @@ class WaxwingBLE:
         )
 
         # Register; returns a list of lists of handles: [[h0, h1, ...]]
-        ((h_dev_id, h_mfst_meta, h_mfst_chunk,
-          h_xfr_req, h_xfr_data, h_xfr_ack,
-          h_rating, h_rep_ex, h_wifi_neg,
-          h_pair_auth, h_sync_att, h_enc_ledger),) = \
+        ((h_dev_id, h_file_cmd, h_file_resp),) = \
             self._ble.gatts_register_services([service_def])
 
         # Store handles indexed by UUID string for easy lookup in IRQ handler
         self._handles = {
             CHAR_DEVICE_IDENTITY:   h_dev_id,
-            CHAR_MANIFEST_META:     h_mfst_meta,
-            CHAR_MANIFEST_CHUNK:    h_mfst_chunk,
-            CHAR_TRANSFER_REQUEST:  h_xfr_req,
-            CHAR_TRANSFER_DATA:     h_xfr_data,
-            CHAR_TRANSFER_ACK:      h_xfr_ack,
-            CHAR_RATING_SUBMIT:     h_rating,
-            CHAR_REP_EXCHANGE:      h_rep_ex,
-            CHAR_WIFI_NEGOTIATE:    h_wifi_neg,
-            CHAR_PAIRING_AUTH:      h_pair_auth,
-            CHAR_SYNC_ATTEST:       h_sync_att,
-            CHAR_ENCOUNTER_LEDGER:  h_enc_ledger,
+            CHAR_FILE_COMMAND:      h_file_cmd,
+            CHAR_FILE_RESPONSE:     h_file_resp,
         }
+
+        # Increase buffer size for file characteristics to handle larger payloads
+        self._ble.gatts_set_buffer(h_file_cmd, 2048)
+        self._ble.gatts_set_buffer(h_file_resp, 2048)
 
         # Reverse map: handle -> UUID string (for IRQ callbacks)
         self._handle_to_uuid = {v: k for k, v in self._handles.items()}
@@ -306,7 +296,22 @@ class WaxwingBLE:
             uuid_str = self._handle_to_uuid.get(attr_handle, "unknown")
             print("[ble] Write: char={} len={}".format(
                 uuid_str[-8:], len(value)))
-            if self._on_write_cb:
+
+            # Route file commands to the file handler
+            from .constants import CHAR_FILE_COMMAND, CHAR_FILE_RESPONSE
+            if uuid_str == CHAR_FILE_COMMAND and self._on_file_cmd_cb:
+                try:
+                    response = self._on_file_cmd_cb(bytes(value))
+                    if response:
+                        h_resp = self._handles.get(CHAR_FILE_RESPONSE)
+                        if h_resp is not None:
+                            self._ble.gatts_write(h_resp, response)
+                            self._ble.gatts_notify(conn_handle, h_resp)
+                            print("[ble] File response sent ({} bytes)".format(
+                                len(response)))
+                except Exception as e:
+                    print("[ble] File command error: {}".format(e))
+            elif self._on_write_cb:
                 self._on_write_cb(conn_handle, uuid_str, bytes(value))
 
         elif event == _IRQ_GATTS_READ_REQUEST:
