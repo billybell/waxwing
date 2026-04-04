@@ -1,243 +1,247 @@
 import SwiftUI
 
+/// Primary view shown after tapping a discovered node.
+/// Displays a compact connection header, then immediately shows the file list
+/// once the connection is ready. Settings (identity, capabilities, mesh) are
+/// accessible via a gear icon in the toolbar.
 struct NodeDetailView: View {
     @EnvironmentObject var bleManager: BLEManager
     @ObservedObject var node: WaxwingNode
+    @State private var showingSettings = false
+    @State private var showingCreateFile = false
+    @State private var showingPhotoUpload = false
 
     var body: some View {
-        List {
-            // Connection section
-            connectionSection
+        VStack(spacing: 0) {
+            // Compact connection banner
+            connectionBanner
 
-            // File management (shown when connection is ready)
+            // Main content area
             if node.connectionState == .ready {
-                filesSection
-            }
-
-            // Identity section (shown after reading Device Identity)
-            if let identity = node.identity {
-                identitySection(identity)
-                capabilitiesSection(identity)
-                meshSection(identity)
+                fileListContent
+            } else {
+                connectingState
             }
         }
-        .listStyle(.insetGrouped)
         .navigationTitle(node.displayName)
         .navigationBarTitleDisplayMode(.large)
-    }
-
-    // MARK: - Connection Section
-
-    private var connectionSection: some View {
-        Section {
-            // State row
-            HStack {
-                Label("Status", systemImage: stateIcon)
-                Spacer()
-                Text(node.connectionState.label)
-                    .foregroundStyle(stateColor)
-
-                if case .connecting = node.connectionState {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                        .padding(.leading, 4)
-                }
-                if case .readingIdentity = node.connectionState {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                        .padding(.leading, 4)
-                }
-            }
-
-            // Signal
-            HStack {
-                Label("Signal", systemImage: "antenna.radiowaves.left.and.right")
-                Spacer()
-                Text("\(node.rssi) dBm (\(node.signalDescription))")
-                    .foregroundStyle(.secondary)
-            }
-
-            // BLE name
-            if let name = node.localName {
-                HStack {
-                    Label("BLE Name", systemImage: "tag")
-                    Spacer()
-                    Text(name)
-                        .font(.body.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            // Connect / Disconnect button
-            connectButton
-        } header: {
-            Text("Connection")
-        }
-    }
-
-    private var connectButton: some View {
-        Button {
-            if node.connectionState.isConnected || node.connectionState == .connecting {
-                bleManager.disconnect()
-            } else {
-                bleManager.connect(to: node)
-            }
-        } label: {
-            HStack {
-                Spacer()
-                if node.connectionState.isConnected || node.connectionState == .connecting {
-                    Label("Disconnect", systemImage: "link.badge.plus")
-                } else {
-                    Label("Connect", systemImage: "link")
-                }
-                Spacer()
-            }
-        }
-        .tint(node.connectionState.isConnected ? .red : .blue)
-    }
-
-    // MARK: - Files Section
-
-    private var filesSection: some View {
-        Section {
-            NavigationLink(destination: NodeFilesView(node: node)) {
-                HStack {
-                    Label("Browse Files", systemImage: "folder")
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-        } header: {
-            Text("Storage")
-        } footer: {
-            Text("View and manage text files on this node's flash storage")
-        }
-    }
-
-    // MARK: - Identity Section
-
-    private func identitySection(_ identity: DeviceIdentity) -> some View {
-        Section {
-            if let name = identity.name {
-                HStack {
-                    Label("Node Name", systemImage: "textformat")
-                    Spacer()
-                    Text(name)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            HStack {
-                Label("Protocol", systemImage: "network")
-                Spacer()
-                Text(identity.protocolName ?? "unknown")
-                    .font(.body.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Label("Version", systemImage: "number")
-                Spacer()
-                Text("v\(identity.protocolVersion)")
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Label("Transport Public Key", systemImage: "key")
-                Text(identity.tpkHex)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-            .padding(.vertical, 2)
-
-            HStack {
-                Label("Fingerprint", systemImage: "hand.wave")
-                Spacer()
-                Text(identity.fingerprint)
-                    .font(.body.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            if let fw = identity.firmware {
-                HStack {
-                    Label("Firmware", systemImage: "cpu")
-                    Spacer()
-                    Text("\(fw) \(identity.firmwareVersion ?? "")")
-                        .foregroundStyle(.secondary)
-                }
-            }
-        } header: {
-            Text("Device Identity")
-        }
-    }
-
-    // MARK: - Capabilities Section
-
-    private func capabilitiesSection(_ identity: DeviceIdentity) -> some View {
-        Section {
-            let caps = identity.capabilities.descriptions
-            if caps.isEmpty {
-                Text("None reported")
-                    .foregroundStyle(.tertiary)
-            } else {
-                ForEach(caps, id: \.self) { cap in
-                    HStack {
-                        Image(systemName: iconForCapability(cap))
-                            .frame(width: 24)
-                            .foregroundStyle(.blue)
-                        Text(cap)
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if node.connectionState == .ready {
+                    Menu {
+                        Button {
+                            showingCreateFile = true
+                        } label: {
+                            Label("New Text File", systemImage: "doc.badge.plus")
+                        }
+                        Button {
+                            showingPhotoUpload = true
+                        } label: {
+                            Label("Upload Photo", systemImage: "photo.badge.plus")
+                        }
+                    } label: {
+                        Image(systemName: "plus")
                     }
                 }
             }
-        } header: {
-            Text("Capabilities")
-        } footer: {
-            Text("Raw flags: 0x\(String(identity.capabilities.rawValue, radix: 16, uppercase: true))")
+
+            ToolbarItem(placement: .automatic) {
+                if node.connectionState == .ready {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingSettings) {
+            NodeSettingsView(node: node)
+                .environmentObject(bleManager)
+        }
+        .sheet(isPresented: $showingCreateFile) {
+            CreateFileView(node: node) {
+                bleManager.listFiles()
+            }
+            .environmentObject(bleManager)
+        }
+        .sheet(isPresented: $showingPhotoUpload) {
+            PhotoUploadView(node: node) {
+                bleManager.listFiles()
+            }
+            .environmentObject(bleManager)
         }
     }
 
-    // MARK: - Mesh Section
+    // MARK: - Connection Banner
 
-    private func meshSection(_ identity: DeviceIdentity) -> some View {
-        Section {
-            HStack {
-                Label("Manifest Items", systemImage: "doc.on.doc")
-                Spacer()
-                Text("\(identity.manifestCount)")
+    private var connectionBanner: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(stateColor)
+                .frame(width: 8, height: 8)
+
+            Text(node.connectionState.label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if node.connectionState == .connecting || node.connectionState == .readingIdentity {
+                ProgressView()
+                    .scaleEffect(0.6)
+            }
+
+            Spacer()
+
+            // Signal strength pill
+            HStack(spacing: 4) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.caption2)
+                Text("\(node.rssi) dBm")
+                    .font(.caption2)
+            }
+            .foregroundStyle(.secondary)
+
+            // Connect / Disconnect
+            Button {
+                if node.connectionState.isConnected || node.connectionState == .connecting {
+                    bleManager.disconnect()
+                } else {
+                    bleManager.connect(to: node)
+                }
+            } label: {
+                Text(node.connectionState.isConnected || node.connectionState == .connecting ? "Disconnect" : "Connect")
+                    .font(.caption.weight(.medium))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .tint(node.connectionState.isConnected ? .red : .blue)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+    }
+
+    // MARK: - Connecting / Pre-ready State
+
+    private var connectingState: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            if case .failed(let msg) = node.connectionState {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.red)
+                Text(msg)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Retry") {
+                    bleManager.connect(to: node)
+                }
+                .buttonStyle(.borderedProminent)
+            } else if node.connectionState == .disconnected {
+                Image(systemName: "link.badge.plus")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.secondary)
+                Text("Connect to browse files")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Button("Connect") {
+                    bleManager.connect(to: node)
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                ProgressView()
+                    .scaleEffect(1.2)
+                Text("Connecting to node...")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
 
-            HStack {
-                Label("Mode", systemImage: identity.attended ? "person.fill" : "server.rack")
-                Spacer()
-                if identity.attended {
-                    Text("Attended")
+            Spacer()
+        }
+        .padding()
+    }
+
+    // MARK: - File List (Primary Content)
+
+    private var fileListContent: some View {
+        List {
+            if bleManager.isFileOperationInProgress {
+                HStack {
+                    ProgressView()
+                        .padding(.trailing, 8)
+                    Text("Loading files...")
                         .foregroundStyle(.secondary)
-                } else {
-                    Text(identity.unattendedMode?.capitalized ?? "Unattended")
-                        .foregroundStyle(.secondary)
+                }
+            } else if bleManager.fileList.isEmpty {
+                emptyFileState
+            } else {
+                filesSection
+            }
+
+            if let error = bleManager.fileOperationError {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .refreshable {
+            bleManager.listFiles()
+        }
+        .onAppear {
+            if node.connectionState == .ready {
+                bleManager.listFiles()
+            }
+        }
+    }
+
+    private var emptyFileState: some View {
+        Section {
+            VStack(spacing: 12) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.secondary)
+                Text("No files on this node")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                Text("Tap + to create a text file or upload a photo")
+                    .font(.subheadline)
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 24)
+        }
+    }
+
+    private var filesSection: some View {
+        Section {
+            ForEach(bleManager.fileList) { file in
+                NavigationLink(destination: FileContentView(node: node, fileName: file.name)) {
+                    HStack {
+                        Image(systemName: iconForFile(file.name))
+                            .foregroundStyle(.blue)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(file.name)
+                                .font(.body)
+                            Text(file.sizeDescription)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
                 }
             }
         } header: {
-            Text("Mesh Status")
+            Text("\(bleManager.fileList.count) file(s)")
         }
     }
 
     // MARK: - Helpers
-
-    private var stateIcon: String {
-        switch node.connectionState {
-        case .disconnected: return "circle"
-        case .connecting:   return "circle.dotted"
-        case .connected:    return "circle.fill"
-        case .readingIdentity: return "circle.fill"
-        case .ready:        return "checkmark.circle.fill"
-        case .failed:       return "exclamationmark.circle.fill"
-        }
-    }
 
     private var stateColor: Color {
         switch node.connectionState {
@@ -250,17 +254,17 @@ struct NodeDetailView: View {
         }
     }
 
-    private func iconForCapability(_ cap: String) -> String {
-        switch cap {
-        case "BLE Transfer": return "antenna.radiowaves.left.and.right"
-        case "WiFi AP":      return "wifi"
-        case "WiFi Client":  return "wifi"
-        case "WiFi Direct":  return "wifi.circle"
-        case "GPS":          return "location"
-        case "SD Card":      return "sdcard"
-        case "Attended":     return "person.fill"
-        case "Unattended":   return "server.rack"
-        default:             return "questionmark.circle"
+    private func iconForFile(_ name: String) -> String {
+        let ext = (name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "jpg", "jpeg", "png", "gif", "bmp", "webp":
+            return "photo"
+        case "txt", "md", "log":
+            return "doc.text"
+        case "json", "xml", "csv":
+            return "doc.badge.gearshape"
+        default:
+            return "doc"
         }
     }
 }

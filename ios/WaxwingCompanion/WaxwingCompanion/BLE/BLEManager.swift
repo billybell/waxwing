@@ -23,6 +23,9 @@ class BLEManager: NSObject, ObservableObject {
     @Published var fileOperationError: String?
     @Published var isFileOperationInProgress = false
 
+    /// Storage info from node
+    @Published var storageInfo: StorageInfo?
+
     // MARK: - Private
 
     private var centralManager: CBCentralManager!
@@ -121,6 +124,20 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// Fetch storage statistics from the connected node.
+    func fetchStorageInfo() {
+        sendFileCommand(["cmd": "storage_info"]) { [weak self] response in
+            guard let self else { return }
+            if let error = response["error"]?.stringValue {
+                self.fileOperationError = error
+                return
+            }
+            if let info = response["info"] {
+                self.storageInfo = StorageInfo.fromCBOR(info)
+            }
+        }
+    }
+
     /// Read a text file from the connected node.
     func readFile(name: String) {
         sendFileCommand(["cmd": "read", "name": name]) { [weak self] response in
@@ -150,6 +167,126 @@ class BLEManager: NSObject, ObservableObject {
                 self.fileOperationError = "Write failed"
                 completion?(false)
             }
+        }
+    }
+
+    /// Write binary data to the node in chunks.
+    ///
+    /// The node-side protocol accepts chunked commands:
+    ///   1. `{cmd: "write_start", name: "photo.jpg", size: 12345}` — open file
+    ///   2. `{cmd: "write_chunk", name: "photo.jpg", offset: N, data: <bytes>}` — append chunk
+    ///   3. `{cmd: "write_end", name: "photo.jpg"}` — finalise and close
+    ///
+    /// Chunk data is sent as a CBOR byte string (major type 2) — no base64
+    /// encoding — to maximize throughput within BLE write limits.
+    ///
+    /// The default chunk size of 384 raw bytes produces CBOR payloads of
+    /// ~440 bytes, which fits comfortably within the Pico W's 512-byte
+    /// BLE ATT write limit after MTU negotiation.
+    func writeFileChunked(
+        name: String,
+        data: Data,
+        chunkSize: Int = 384,
+        progress: ((Double) -> Void)? = nil,
+        completion: ((Bool) -> Void)? = nil
+    ) {
+        // Chunked write: start → chunks → end
+        let totalSize = data.count
+        sendFileCommand(["cmd": "write_start", "name": name, "size": totalSize]) { [weak self] response in
+            guard let self else { return }
+            if let error = response["error"]?.stringValue {
+                self.fileOperationError = error
+                completion?(false)
+                return
+            }
+            guard response["ok"]?.boolValue == true else {
+                self.fileOperationError = "Failed to start chunked write"
+                completion?(false)
+                return
+            }
+
+            // Send chunks sequentially
+            self.sendNextChunk(
+                name: name,
+                data: data,
+                offset: 0,
+                chunkSize: chunkSize,
+                totalSize: totalSize,
+                progress: progress,
+                completion: completion
+            )
+        }
+    }
+
+    /// Recursively sends data chunks until the entire payload is transferred.
+    private func sendNextChunk(
+        name: String,
+        data: Data,
+        offset: Int,
+        chunkSize: Int,
+        totalSize: Int,
+        progress: ((Double) -> Void)?,
+        completion: ((Bool) -> Void)?
+    ) {
+        if offset >= totalSize {
+            // All chunks sent — finalise
+            sendFileCommand(["cmd": "write_end", "name": name]) { [weak self] response in
+                guard let self else { return }
+                if let error = response["error"]?.stringValue {
+                    self.fileOperationError = error
+                    completion?(false)
+                    return
+                }
+                if response["ok"]?.boolValue == true {
+                    self.fileOperationError = nil
+                    progress?(1.0)
+                    completion?(true)
+                } else {
+                    self.fileOperationError = "Failed to finalize file"
+                    completion?(false)
+                }
+            }
+            return
+        }
+
+        let end = min(offset + chunkSize, totalSize)
+        let chunk = data.subdata(in: offset..<end)
+
+        // Send chunk data as CBOR byte string (Data), not base64 String
+        let cmd: [String: Any] = [
+            "cmd": "write_chunk",
+            "name": name,
+            "offset": offset,
+            "data": chunk  // Data → CBOR byte string (major type 2)
+        ]
+
+        sendFileCommand(cmd) { [weak self] response in
+            guard let self else { return }
+            if let error = response["error"]?.stringValue {
+                self.fileOperationError = error
+                completion?(false)
+                return
+            }
+            guard response["ok"]?.boolValue == true else {
+                self.fileOperationError = "Chunk write failed at offset \(offset)"
+                completion?(false)
+                return
+            }
+
+            let newOffset = end
+            let currentProgress = Double(newOffset) / Double(totalSize)
+            progress?(currentProgress)
+
+            // Send next chunk
+            self.sendNextChunk(
+                name: name,
+                data: data,
+                offset: newOffset,
+                chunkSize: chunkSize,
+                totalSize: totalSize,
+                progress: progress,
+                completion: completion
+            )
         }
     }
 

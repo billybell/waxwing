@@ -97,6 +97,58 @@ struct NodeFile: Identifiable {
     }
 }
 
+// MARK: - Storage Info
+
+/// Storage statistics reported by the node's `storage_info` command.
+struct StorageInfo {
+    let free: Int
+    let used: Int
+    let reserve: Int
+    let fileCount: Int
+
+    /// Total usable capacity (free + used, excluding reserve)
+    var total: Int { free + used }
+
+    /// Usage fraction 0.0–1.0
+    var usageFraction: Double {
+        guard total > 0 else { return 0 }
+        return Double(used) / Double(total)
+    }
+
+    /// Human-readable free space
+    var freeDescription: String { Self.formatBytes(free) }
+    /// Human-readable used space
+    var usedDescription: String { Self.formatBytes(used) }
+    /// Human-readable total
+    var totalDescription: String { Self.formatBytes(total) }
+
+    static func formatBytes(_ bytes: Int) -> String {
+        if bytes < 1024 {
+            return "\(bytes) B"
+        } else if bytes < 1024 * 1024 {
+            return String(format: "%.1f KB", Double(bytes) / 1024.0)
+        } else {
+            return String(format: "%.1f MB", Double(bytes) / (1024.0 * 1024.0))
+        }
+    }
+
+    /// Parse from the CBOR response: {"cmd":"storage_info","info":{...}}
+    static func fromCBOR(_ info: CBORValue) -> StorageInfo? {
+        guard let free = info["free"]?.uintValue,
+              let used = info["used"]?.uintValue,
+              let reserve = info["reserve"]?.uintValue,
+              let count = info["file_count"]?.uintValue else {
+            return nil
+        }
+        return StorageInfo(
+            free: Int(free),
+            used: Int(used),
+            reserve: Int(reserve),
+            fileCount: Int(count)
+        )
+    }
+}
+
 // MARK: - Parsed Device Identity
 
 struct DeviceIdentity {

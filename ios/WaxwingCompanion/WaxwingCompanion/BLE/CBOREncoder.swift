@@ -23,6 +23,8 @@ struct CBOREncoder {
 
     private static func encodeItem(_ value: Any, into data: inout Data) {
         switch value {
+        case let d as Data:
+            encodeByteString(d, into: &data)
         case let s as String:
             encodeTextString(s, into: &data)
         case let i as Int:
@@ -80,6 +82,11 @@ struct CBOREncoder {
         // CBOR negative int: -1 - n, so n = -1 - value
         let n = UInt64(-1 - value)
         encodeArgumentHeader(majorType: 1, value: n, into: &data)
+    }
+
+    private static func encodeByteString(_ bytes: Data, into data: inout Data) {
+        encodeArgumentHeader(majorType: 2, value: UInt64(bytes.count), into: &data)
+        data.append(bytes)
     }
 
     private static func encodeTextString(_ string: String, into data: inout Data) {

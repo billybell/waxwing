@@ -1,15 +1,25 @@
 # waxwing/filestore.py
-# Simple flat-file storage on Pico W internal flash.
+# Flat-file storage on Pico W internal flash (or future SD card).
 #
-# Files are stored in /files/ directory on the flash filesystem.
-# Phase 1: text files only, limited to ~2 KB each to stay within
-# BLE characteristic buffer limits.
+# Phase 1.5: text files, limited to 2 KB each.
+# Phase 1.6: binary files (images), chunked writes, storage quotas.
+#
+# The Pico W has ~1.5 MB of usable flash after MicroPython.  Without an
+# SD card we need to be very careful about running out of space.  Every
+# write operation checks free space BEFORE touching the filesystem.
 
 import os
+import gc
 
 FILES_DIR = "/files"
-MAX_FILE_SIZE = 2048  # bytes — keeps things comfy within BLE buffers
+MAX_FILE_SIZE = 2048          # single-shot text file limit (bytes)
+MAX_CHUNKED_FILE_SIZE = 512 * 1024   # 512 KB hard cap per file
+STORAGE_RESERVE = 32 * 1024  # keep 32 KB free for firmware / GC headroom
 
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
 def _ensure_dir():
     """Create the /files directory if it doesn't exist."""
@@ -22,12 +32,59 @@ def _ensure_dir():
 
 def _path(name):
     """Resolve a filename to its full path. Rejects path traversal."""
-    # Strip any directory components for safety
     clean = name.replace("/", "").replace("\\", "").strip()
     if not clean:
         raise ValueError("Empty filename")
     return FILES_DIR + "/" + clean
 
+
+def _fs_free():
+    """
+    Return the approximate number of free bytes on the filesystem
+    that contains FILES_DIR.
+
+    os.statvfs() returns a tuple:
+      (f_bsize, f_frsize, f_blocks, f_bfree, f_bavail, ...)
+    We use f_frsize * f_bavail as the available space.
+    """
+    try:
+        st = os.statvfs(FILES_DIR)
+        return st[1] * st[4]   # f_frsize * f_bavail
+    except (OSError, AttributeError):
+        # If statvfs isn't available (sim / test), assume plenty of room
+        return 1_000_000
+
+
+def _check_space(needed):
+    """
+    Raise OSError if writing `needed` bytes would drop free space
+    below STORAGE_RESERVE.
+    """
+    free = _fs_free()
+    if free - needed < STORAGE_RESERVE:
+        gc.collect()            # last-ditch GC before giving up
+        free = _fs_free()
+        if free - needed < STORAGE_RESERVE:
+            raise OSError(
+                "Not enough storage ({} free, need {} + {} reserve)".format(
+                    free, needed, STORAGE_RESERVE))
+
+
+def _total_stored():
+    """Return the total bytes consumed by all files in FILES_DIR."""
+    _ensure_dir()
+    total = 0
+    for entry in os.listdir(FILES_DIR):
+        try:
+            total += os.stat(FILES_DIR + "/" + entry)[6]
+        except OSError:
+            pass
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Public API — queries
+# ---------------------------------------------------------------------------
 
 def list_files():
     """
@@ -39,7 +96,6 @@ def list_files():
     for entry in os.listdir(FILES_DIR):
         try:
             stat = os.stat(FILES_DIR + "/" + entry)
-            # stat[6] is file size
             result.append({"name": entry, "size": stat[6]})
         except OSError:
             pass
@@ -58,27 +114,15 @@ def read_file(name):
         return f.read()
 
 
-def write_file(name, content):
+def read_file_binary(name):
     """
-    Write a text file. Creates or overwrites.
-    Raises ValueError if content exceeds MAX_FILE_SIZE.
+    Read a file and return its contents as bytes.
+    Raises OSError if file doesn't exist.
     """
     _ensure_dir()
-    if len(content) > MAX_FILE_SIZE:
-        raise ValueError("File too large ({} > {} bytes)".format(
-            len(content), MAX_FILE_SIZE))
     path = _path(name)
-    with open(path, "w") as f:
-        f.write(content)
-    print("[filestore] Wrote {} ({} bytes)".format(name, len(content)))
-
-
-def delete_file(name):
-    """Delete a file. Raises OSError if it doesn't exist."""
-    _ensure_dir()
-    path = _path(name)
-    os.remove(path)
-    print("[filestore] Deleted {}".format(name))
+    with open(path, "rb") as f:
+        return f.read()
 
 
 def file_exists(name):
@@ -89,3 +133,245 @@ def file_exists(name):
         return True
     except OSError:
         return False
+
+
+def storage_info():
+    """
+    Return a dict with storage stats:
+      {"free": <bytes>, "used": <bytes>, "reserve": <bytes>,
+       "file_count": <int>}
+    """
+    _ensure_dir()
+    free = _fs_free()
+    files = os.listdir(FILES_DIR)
+    used = 0
+    for entry in files:
+        try:
+            used += os.stat(FILES_DIR + "/" + entry)[6]
+        except OSError:
+            pass
+    return {
+        "free": free,
+        "used": used,
+        "reserve": STORAGE_RESERVE,
+        "file_count": len(files),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Public API — single-shot write (text, ≤2 KB)
+# ---------------------------------------------------------------------------
+
+def write_file(name, content):
+    """
+    Write a text file. Creates or overwrites.
+    Raises ValueError if content exceeds MAX_FILE_SIZE.
+    Raises OSError if not enough free space.
+    """
+    _ensure_dir()
+    if len(content) > MAX_FILE_SIZE:
+        raise ValueError("File too large ({} > {} bytes)".format(
+            len(content), MAX_FILE_SIZE))
+    _check_space(len(content))
+    path = _path(name)
+    with open(path, "w") as f:
+        f.write(content)
+    print("[filestore] Wrote {} ({} bytes)".format(name, len(content)))
+
+
+# ---------------------------------------------------------------------------
+# Public API — single-shot binary write (small files, ≤2 KB)
+# ---------------------------------------------------------------------------
+
+def write_file_binary(name, data):
+    """
+    Write raw bytes to a file. Creates or overwrites.
+    Raises ValueError if data exceeds MAX_FILE_SIZE.
+    Raises OSError if not enough free space.
+    """
+    _ensure_dir()
+    if len(data) > MAX_FILE_SIZE:
+        raise ValueError("File too large ({} > {} bytes)".format(
+            len(data), MAX_FILE_SIZE))
+    _check_space(len(data))
+    path = _path(name)
+    with open(path, "wb") as f:
+        f.write(data)
+    print("[filestore] Wrote binary {} ({} bytes)".format(name, len(data)))
+
+
+# ---------------------------------------------------------------------------
+# Public API — chunked binary write (images / large files)
+# ---------------------------------------------------------------------------
+#
+# Protocol:
+#   1. chunked_start(name, total_size)  — validate & open file
+#   2. chunked_append(name, data)       — append bytes (called N times)
+#   3. chunked_finish(name)             — finalise, verify size
+#   4. chunked_abort(name)              — clean up on error
+#
+# Only ONE chunked write may be in progress at a time to keep RAM usage
+# predictable on the Pico W (264 KB SRAM).
+
+_chunked_state = None   # dict or None
+
+
+def chunked_start(name, total_size):
+    """
+    Begin a chunked write.
+
+    Validates:
+      - No other chunked write is in progress
+      - total_size is within MAX_CHUNKED_FILE_SIZE
+      - Enough free space exists (including reserve)
+
+    Opens the file for binary writing.
+    """
+    global _chunked_state
+
+    if _chunked_state is not None:
+        raise RuntimeError("Chunked write already in progress for '{}'".format(
+            _chunked_state["name"]))
+
+    if total_size > MAX_CHUNKED_FILE_SIZE:
+        raise ValueError("File too large ({} > {} bytes)".format(
+            total_size, MAX_CHUNKED_FILE_SIZE))
+
+    if total_size <= 0:
+        raise ValueError("Invalid file size: {}".format(total_size))
+
+    _ensure_dir()
+    _check_space(total_size)
+
+    path = _path(name)
+
+    # Open file — we keep the handle open across chunks so we never
+    # buffer the whole image in RAM.
+    fh = open(path, "wb")
+
+    _chunked_state = {
+        "name": name,
+        "path": path,
+        "fh": fh,
+        "expected": total_size,
+        "written": 0,
+    }
+    print("[filestore] Chunked write started: {} ({} bytes expected)".format(
+        name, total_size))
+
+
+def chunked_append(name, data):
+    """
+    Append a chunk of bytes to the in-progress file.
+
+    Validates:
+      - A chunked write is in progress for `name`
+      - Appending won't exceed the declared total_size
+    """
+    global _chunked_state
+
+    if _chunked_state is None:
+        raise RuntimeError("No chunked write in progress")
+    if _chunked_state["name"] != name:
+        raise RuntimeError("Chunked write is for '{}', not '{}'".format(
+            _chunked_state["name"], name))
+
+    new_total = _chunked_state["written"] + len(data)
+    if new_total > _chunked_state["expected"]:
+        # Capture values before abort clears state
+        prev_written = _chunked_state["written"]
+        prev_expected = _chunked_state["expected"]
+        chunked_abort(name)
+        raise ValueError("Chunk would exceed declared size ({} + {} > {})".format(
+            prev_written, len(data), prev_expected))
+
+    _chunked_state["fh"].write(data)
+    _chunked_state["written"] = new_total
+
+    # Periodically free memory — we're in a tight loop receiving BLE data
+    if new_total % (8 * 1024) == 0:
+        gc.collect()
+
+
+def chunked_finish(name):
+    """
+    Finalise the chunked write.  Closes the file handle and verifies
+    the total bytes written matches what was declared.
+
+    Returns the final byte count.
+    """
+    global _chunked_state
+
+    if _chunked_state is None:
+        raise RuntimeError("No chunked write in progress")
+    if _chunked_state["name"] != name:
+        raise RuntimeError("Chunked write is for '{}', not '{}'".format(
+            _chunked_state["name"], name))
+
+    written = _chunked_state["written"]
+    expected = _chunked_state["expected"]
+
+    _chunked_state["fh"].close()
+
+    if written != expected:
+        # Size mismatch — remove the partial file
+        try:
+            os.remove(_chunked_state["path"])
+        except OSError:
+            pass
+        _chunked_state = None
+        raise ValueError(
+            "Size mismatch: wrote {} but expected {} bytes".format(
+                written, expected))
+
+    fname = _chunked_state["name"]
+    _chunked_state = None
+    gc.collect()
+    print("[filestore] Chunked write complete: {} ({} bytes)".format(
+        fname, written))
+    return written
+
+
+def chunked_abort(name):
+    """
+    Abort a chunked write.  Closes the file handle and removes the
+    partial file.
+    """
+    global _chunked_state
+
+    if _chunked_state is None:
+        return  # nothing to abort
+
+    try:
+        _chunked_state["fh"].close()
+    except Exception:
+        pass
+
+    try:
+        os.remove(_chunked_state["path"])
+    except OSError:
+        pass
+
+    print("[filestore] Chunked write aborted: {}".format(
+        _chunked_state["name"]))
+    _chunked_state = None
+    gc.collect()
+
+
+def chunked_in_progress():
+    """Return the name of the file being written, or None."""
+    if _chunked_state is not None:
+        return _chunked_state["name"]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public API — delete
+# ---------------------------------------------------------------------------
+
+def delete_file(name):
+    """Delete a file. Raises OSError if it doesn't exist."""
+    _ensure_dir()
+    path = _path(name)
+    os.remove(path)
+    print("[filestore] Deleted {}".format(name))
