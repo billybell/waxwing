@@ -81,7 +81,7 @@ enum ConnectionState: Equatable {
 // MARK: - Node File
 
 /// Represents a file stored on a Waxwing node's flash storage.
-struct NodeFile: Identifiable {
+struct NodeFile: Identifiable, Equatable {
     let name: String
     let size: Int
 

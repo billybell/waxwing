@@ -70,6 +70,8 @@ def _on_file_command(data):
     Commands:
       {"cmd": "ls"}
       {"cmd": "read",        "name": "foo.txt"}
+      {"cmd": "read_start",  "name": "photo.png"}
+      {"cmd": "read_chunk",  "name": "photo.png", "offset": 0, "size": 384}
       {"cmd": "write",       "name": "foo.txt", "data": "<text or base64>"}
       {"cmd": "write_start", "name": "photo.jpg", "size": 12345}
       {"cmd": "write_chunk", "name": "photo.jpg", "offset": 0, "data": "<base64>"}
@@ -96,6 +98,35 @@ def _on_file_command(data):
             except OSError:
                 return cbor.dumps({
                     "cmd": "read", "error": "File not found: " + name
+                })
+
+        elif cmd == "read_start":
+            name = cmd_map.get("name", "")
+            try:
+                size = filestore.read_start(name)
+                return cbor.dumps({
+                    "cmd": "read_start", "name": name,
+                    "ok": True, "size": size
+                })
+            except OSError:
+                return cbor.dumps({
+                    "cmd": "read_start",
+                    "error": "File not found: " + name
+                })
+
+        elif cmd == "read_chunk":
+            name = cmd_map.get("name", "")
+            offset = cmd_map.get("offset", 0)
+            size = cmd_map.get("size", 384)
+            try:
+                data = filestore.read_chunk(name, offset, size)
+                return cbor.dumps({
+                    "cmd": "read_chunk", "name": name,
+                    "ok": True, "data": data
+                })
+            except (OSError, ValueError) as e:
+                return cbor.dumps({
+                    "cmd": "read_chunk", "error": str(e)
                 })
 
         elif cmd == "write":

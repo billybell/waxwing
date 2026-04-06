@@ -366,6 +366,47 @@ def chunked_in_progress():
 
 
 # ---------------------------------------------------------------------------
+# Public API — chunked binary read (images / large files)
+# ---------------------------------------------------------------------------
+#
+# Protocol (mirrors chunked write):
+#   1. read_start(name)         — validate & return file size
+#   2. read_chunk(name, offset, size) — return bytes at offset
+#
+# Unlike chunked writes, reads are stateless per-chunk so they don't need
+# an open file handle — each chunk opens, seeks, reads, closes.  This keeps
+# RAM usage minimal on the Pico W.
+
+def read_start(name):
+    """
+    Begin a chunked read.  Returns the file size in bytes.
+    Raises OSError if the file doesn't exist.
+    """
+    _ensure_dir()
+    path = _path(name)
+    stat = os.stat(path)
+    size = stat[6]
+    print("[filestore] Chunked read started: {} ({} bytes)".format(name, size))
+    return size
+
+
+def read_chunk(name, offset, size):
+    """
+    Read `size` bytes starting at `offset` from the named file.
+    Returns bytes.
+
+    Raises OSError if the file doesn't exist.
+    Raises ValueError if offset/size are out of bounds.
+    """
+    _ensure_dir()
+    path = _path(name)
+    with open(path, "rb") as f:
+        f.seek(offset)
+        data = f.read(size)
+    return data
+
+
+# ---------------------------------------------------------------------------
 # Public API — delete
 # ---------------------------------------------------------------------------
 

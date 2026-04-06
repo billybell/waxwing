@@ -1,15 +1,25 @@
 import SwiftUI
 
 /// Primary view shown after tapping a discovered node.
-/// Displays a compact connection header, then immediately shows the file list
-/// once the connection is ready. Settings (identity, capabilities, mesh) are
-/// accessible via a gear icon in the toolbar.
+/// Displays a compact connection header, then a segmented view of
+/// files (list) and Waxwing images (grid). Settings are accessible
+/// via a gear icon in the toolbar.
 struct NodeDetailView: View {
     @EnvironmentObject var bleManager: BLEManager
     @ObservedObject var node: WaxwingNode
     @State private var showingSettings = false
     @State private var showingCreateFile = false
     @State private var showingPhotoUpload = false
+    @State private var showingCompose = false
+    @State private var viewMode: ViewMode = .files
+
+    /// Shared cache for locally composed images.
+    @StateObject private var imageCache = WaxwingImageCache()
+
+    enum ViewMode: String, CaseIterable {
+        case files = "Files"
+        case grid = "Images"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,7 +28,26 @@ struct NodeDetailView: View {
 
             // Main content area
             if node.connectionState == .ready {
-                fileListContent
+                // Segmented picker
+                Picker("View", selection: $viewMode) {
+                    ForEach(ViewMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+
+                switch viewMode {
+                case .files:
+                    fileListContent
+                case .grid:
+                    ImageGridView(
+                        imageCache: imageCache,
+                        palette: WaxwingPalettes.cedar
+                    )
+                    .environmentObject(bleManager)
+                }
             } else {
                 connectingState
             }
@@ -29,6 +58,11 @@ struct NodeDetailView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 if node.connectionState == .ready {
                     Menu {
+                        Button {
+                            showingCompose = true
+                        } label: {
+                            Label("Compose Image", systemImage: "wand.and.stars")
+                        }
                         Button {
                             showingCreateFile = true
                         } label: {
@@ -67,6 +101,15 @@ struct NodeDetailView: View {
         }
         .sheet(isPresented: $showingPhotoUpload) {
             PhotoUploadView(node: node) {
+                bleManager.listFiles()
+            }
+            .environmentObject(bleManager)
+        }
+        .sheet(isPresented: $showingCompose) {
+            ComposeImageView(
+                node: node,
+                imageCache: imageCache
+            ) {
                 bleManager.listFiles()
             }
             .environmentObject(bleManager)
@@ -208,9 +251,10 @@ struct NodeDetailView: View {
                 Text("No files on this node")
                     .font(.headline)
                     .foregroundStyle(.secondary)
-                Text("Tap + to create a text file or upload a photo")
+                Text("Tap + to compose an image, create a text file, or upload a photo")
                     .font(.subheadline)
                     .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 24)
