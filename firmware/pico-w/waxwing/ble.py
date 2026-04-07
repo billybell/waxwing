@@ -103,6 +103,12 @@ class WaxwingBLE:
         self._connected = False
         self._conn_handle = None
 
+        # Monotonic session counter — incremented on every connect.
+        # Useful for correlating logs across a connect/disconnect cycle and
+        # spotting cases where session N+1 starts before session N is fully
+        # torn down.
+        self._session_id = 0
+
         # Characteristic value handles (populated after GATT registration)
         self._handles = {}
 
@@ -258,6 +264,7 @@ class WaxwingBLE:
         Start or restart BLE advertising.
         interval_us: advertising interval in microseconds (default 500 ms).
         """
+        print("[ble] gap_advertise(start) interval_us={}".format(interval_us))
         self._ble.gap_advertise(
             interval_us,
             adv_data=self._adv_data,
@@ -272,21 +279,48 @@ class WaxwingBLE:
     def _irq_handler(self, event, data):
         if event == _IRQ_CENTRAL_CONNECT:
             conn_handle, addr_type, addr = data
+
+            # Sanity check: detect overlapping sessions. If we believe we're
+            # already connected when a new connect arrives, the previous
+            # disconnect IRQ was either lost or never delivered — log loudly
+            # so the bug is obvious instead of silent.
+            if self._connected:
+                print("[ble] WARNING: connect IRQ while already connected "
+                      "(prev_handle={} new_handle={}); previous session was "
+                      "not cleanly torn down".format(
+                          self._conn_handle, conn_handle))
+
+            self._session_id += 1
             self._connected   = True
             self._conn_handle = conn_handle
             addr_str = ":".join("{:02x}".format(b) for b in bytes(addr))
-            print("[ble] Connected: handle={} addr={}".format(
-                conn_handle, addr_str))
+            print("[ble] Connected: session={} handle={} addr={}".format(
+                self._session_id, conn_handle, addr_str))
             if self._on_connect_cb:
                 self._on_connect_cb(conn_handle)
 
         elif event == _IRQ_CENTRAL_DISCONNECT:
             conn_handle, addr_type, addr = data
+
+            # Sanity check: a disconnect for a handle other than the one we
+            # think we're tracking means we have stale state somewhere.
+            if self._conn_handle is not None and conn_handle != self._conn_handle:
+                print("[ble] WARNING: disconnect for handle={} but we're "
+                      "tracking handle={}".format(
+                          conn_handle, self._conn_handle))
+
+            print("[ble] Disconnected: session={} handle={}".format(
+                self._session_id, conn_handle))
+
             self._connected   = False
             self._conn_handle = None
-            print("[ble] Disconnected: handle={}".format(conn_handle))
+
             if self._on_disconnect_cb:
-                self._on_disconnect_cb(conn_handle)
+                try:
+                    self._on_disconnect_cb(conn_handle)
+                except Exception as e:
+                    print("[ble] on_disconnect_cb error: {}".format(e))
+
             # Restart advertising so the next peer can find us
             self._advertise()
 
@@ -294,8 +328,18 @@ class WaxwingBLE:
             conn_handle, attr_handle = data
             value = self._ble.gatts_read(attr_handle)
             uuid_str = self._handle_to_uuid.get(attr_handle, "unknown")
-            print("[ble] Write: char={} len={}".format(
-                uuid_str[-8:], len(value)))
+            print("[ble] Write: session={} handle={} char={} len={}".format(
+                self._session_id, conn_handle,
+                uuid_str[-8:] if uuid_str != "unknown" else "unknown",
+                len(value)))
+
+            # Defensive: a write should never arrive for a connection we
+            # don't think we have. If it does, our connect/disconnect
+            # bookkeeping is out of sync — log it but still try to serve
+            # the request so we don't strand the client.
+            if not self._connected:
+                print("[ble] WARNING: write while not connected; "
+                      "bookkeeping out of sync — accepting anyway")
 
             # Route file commands to the file handler
             from .constants import CHAR_FILE_COMMAND, CHAR_FILE_RESPONSE
@@ -306,9 +350,19 @@ class WaxwingBLE:
                         h_resp = self._handles.get(CHAR_FILE_RESPONSE)
                         if h_resp is not None:
                             self._ble.gatts_write(h_resp, response)
-                            self._ble.gatts_notify(conn_handle, h_resp)
-                            print("[ble] File response sent ({} bytes)".format(
-                                len(response)))
+                            try:
+                                self._ble.gatts_notify(conn_handle, h_resp)
+                                print("[ble] File response sent "
+                                      "({} bytes, handle={})".format(
+                                          len(response), conn_handle))
+                            except Exception as e:
+                                # gatts_notify can fail if the central is
+                                # not subscribed or the link has dropped.
+                                # This is the smoking gun for "iOS thinks
+                                # it's subscribed but the Pico can't push".
+                                print("[ble] gatts_notify FAILED "
+                                      "({} bytes, handle={}): {}".format(
+                                          len(response), conn_handle, e))
                 except Exception as e:
                     print("[ble] File command error: {}".format(e))
             elif self._on_write_cb:
@@ -319,3 +373,9 @@ class WaxwingBLE:
             # We pre-populate all values with gatts_write(), so nothing to do
             # here for Phase 1.  Return 0 to allow the read.
             pass
+
+        else:
+            # Catch-all: log unknown IRQ events so newly-introduced ones
+            # (e.g. MTU exchange, indicate complete) don't get silently
+            # ignored during future debugging.
+            print("[ble] IRQ event={} (unhandled)".format(event))

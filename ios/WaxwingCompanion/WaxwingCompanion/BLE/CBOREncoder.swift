@@ -5,8 +5,10 @@ import Foundation
 // Encodes the subset of CBOR needed for Waxwing file commands:
 //   - Unsigned integers (major type 0)
 //   - Text strings (major type 3)
+//   - Byte strings (major type 2)
 //   - Arrays (major type 4)
 //   - Maps with string keys (major type 5)
+//   - IEEE 754 double-precision floats (major type 7, additional info 27)
 //   - Simple values: true, false (major type 7)
 
 struct CBOREncoder {
@@ -37,6 +39,10 @@ struct CBOREncoder {
             encodeUnsignedInt(UInt64(u), into: &data)
         case let u as UInt64:
             encodeUnsignedInt(u, into: &data)
+        case let d as Double:
+            encodeDouble(d, into: &data)
+        case let f as Float:
+            encodeDouble(Double(f), into: &data)
         case let b as Bool:
             data.append(b ? 0xF5 : 0xF4)
         case let arr as [Any]:
@@ -100,6 +106,13 @@ struct CBOREncoder {
         for item in array {
             encodeItem(item, into: &data)
         }
+    }
+
+    private static func encodeDouble(_ value: Double, into data: inout Data) {
+        // CBOR major type 7, additional info 27 = 64-bit IEEE 754 double
+        data.append(0xFB)
+        var bits = value.bitPattern.bigEndian
+        data.append(contentsOf: withUnsafeBytes(of: &bits) { Array($0) })
     }
 
     private static func encodeMap(_ map: [String: Any], into data: inout Data) {
