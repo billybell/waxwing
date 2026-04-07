@@ -3,6 +3,7 @@ import CoreBluetooth
 
 struct ScannerView: View {
     @EnvironmentObject var bleManager: BLEManager
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack {
@@ -19,9 +20,21 @@ struct ScannerView: View {
             }
             .navigationTitle("Waxwing")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Settings")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     scanButton
                 }
+            }
+            .sheet(isPresented: $showingSettings) {
+                AppSettingsView()
+                    .environmentObject(bleManager)
             }
         }
     }

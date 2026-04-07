@@ -39,6 +39,7 @@ def _led_error():
 # Application state
 # ---------------------------------------------------------------------------
 _connected = False
+_ble_ref = None  # set in main(), used to update device identity
 
 
 def _on_connect(conn_handle):
@@ -46,11 +47,39 @@ def _on_connect(conn_handle):
     _connected = True
     print("[main] Peer connected (handle={})".format(conn_handle))
 
+    # Belt-and-braces: also clear any leftover chunked-write state on
+    # connect, in case the previous disconnect IRQ was missed entirely.
+    try:
+        pending = filestore.chunked_in_progress()
+        if pending:
+            print("[main] Stale chunked write of {} found on connect; "
+                  "aborting".format(pending))
+            filestore.chunked_abort(pending)
+    except Exception as e:
+        print("[main] chunked_abort on connect failed: {}".format(e))
+
+    _refresh_manifest_count()
+
 
 def _on_disconnect(conn_handle):
     global _connected
     _connected = False
     print("[main] Peer disconnected (handle={})".format(conn_handle))
+
+    # If a chunked write was in progress when the peer dropped, abort it
+    # so the next session starts with a clean filestore state. Without
+    # this, the half-written file plus the in-progress flag can wedge
+    # subsequent write_start commands.
+    try:
+        pending = filestore.chunked_in_progress()
+        if pending:
+            print("[main] Aborting in-progress chunked write of {} "
+                  "due to disconnect".format(pending))
+            filestore.chunked_abort(pending)
+    except Exception as e:
+        print("[main] chunked_abort on disconnect failed: {}".format(e))
+
+    _refresh_manifest_count()
 
 
 def _on_write(conn_handle, char_uuid, data):
@@ -187,6 +216,7 @@ def _on_file_command(data):
             name = cmd_map.get("name", "")
             try:
                 written = filestore.chunked_finish(name)
+                _refresh_manifest_count()
                 return cbor.dumps({
                     "cmd": "write_end", "name": name,
                     "ok": True, "size": written
@@ -207,6 +237,7 @@ def _on_file_command(data):
                 if filestore.chunked_in_progress() == name:
                     filestore.chunked_abort(name)
                 filestore.delete_file(name)
+                _refresh_manifest_count()
                 return cbor.dumps({
                     "cmd": "delete", "name": name, "ok": True
                 })
@@ -218,6 +249,37 @@ def _on_file_command(data):
         elif cmd == "storage_info":
             info = filestore.storage_info()
             return cbor.dumps({"cmd": "storage_info", "info": info})
+
+        elif cmd == "write_meta":
+            name = cmd_map.get("name", "")
+            meta = cmd_map.get("meta", {})
+            try:
+                raw = cbor.dumps(meta)
+                filestore.write_meta(name, raw)
+                return cbor.dumps({
+                    "cmd": "write_meta", "name": name, "ok": True
+                })
+            except (ValueError, OSError) as e:
+                return cbor.dumps({
+                    "cmd": "write_meta", "error": str(e)
+                })
+
+        elif cmd == "read_meta":
+            name = cmd_map.get("name", "")
+            raw = filestore.read_meta(name)
+            if raw is None:
+                return cbor.dumps({
+                    "cmd": "read_meta", "name": name, "meta": {}
+                })
+            try:
+                meta = cbor.loads(raw)
+                return cbor.dumps({
+                    "cmd": "read_meta", "name": name, "meta": meta
+                })
+            except Exception:
+                return cbor.dumps({
+                    "cmd": "read_meta", "name": name, "meta": {}
+                })
 
         else:
             return cbor.dumps({"error": "Unknown command: " + str(cmd)})
@@ -232,6 +294,19 @@ def _on_file_command(data):
         except Exception:
             pass
         return cbor.dumps({"error": str(e)})
+
+
+def _refresh_manifest_count():
+    """
+    Update the Device Identity characteristic with the current file count
+    so the companion app sees an accurate Manifest Items number.
+    """
+    if _ble_ref is not None:
+        count = filestore.content_file_count()
+        _ble_ref.update_device_identity(
+            manifest_count=count,
+            attended=_connected,
+        )
 
 
 # Binary file extensions — these get base64-decoded on single-shot write
@@ -303,13 +378,17 @@ def main():
     print("[main] TPK       : {}...".format(identity["tpk_hex"][:16]))
 
     # -- Step 2 + 3: BLE GATT server --
+    global _ble_ref
     try:
         ble = WaxwingBLE(identity, messages)
+        _ble_ref = ble
         ble.on_connect(_on_connect)
         ble.on_disconnect(_on_disconnect)
         ble.on_write(_on_write)
         ble.on_file_command(_on_file_command)
         ble.start()
+        # Set initial manifest count from stored files
+        _refresh_manifest_count()
     except Exception as e:
         print("[main] FATAL: BLE init failed: {}".format(e))
         while True:

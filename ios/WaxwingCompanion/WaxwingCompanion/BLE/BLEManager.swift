@@ -50,6 +50,12 @@ class BLEManager: NSObject, ObservableObject {
     /// is currently in progress and owns the BLE command channel.
     private var operationInFlight = false
 
+    /// True once the file-response notification subscription has been
+    /// confirmed live by the peripheral via didUpdateNotificationStateFor.
+    /// We MUST NOT issue file commands until this is true, or the response
+    /// notification can be missed and the command will hang.
+    private var notificationsReady = false
+
     // MARK: - Init
 
     override init() {
@@ -94,20 +100,36 @@ class BLEManager: NSObject, ObservableObject {
             disconnect()
         }
 
+        // No-op if we're already connected to this same node — avoid
+        // stomping on an in-flight handshake or already-ready session.
+        if connectedNode?.id == node.id, node.connectionState.isConnected {
+            print("[BLE] connect() ignored: already connected to \(node.displayName)")
+            return
+        }
+
+        // Defensive: clear any leftover characteristic cache so the next
+        // service discovery populates fresh references. This matters on
+        // reconnect: a stale entry from the previous session could otherwise
+        // be used to write to a now-invalid characteristic instance.
+        characteristicsByUUID.removeAll()
+
         node.connectionState = .connecting
         connectedNode = node
         statusMessage = "Connecting to \(node.displayName)..."
 
+        print("[BLE] connect: \(node.displayName) (\(node.peripheral.identifier))")
         centralManager.connect(node.peripheral, options: nil)
     }
 
     func disconnect() {
         guard let node = connectedNode else { return }
+        print("[BLE] disconnect: \(node.displayName)")
         centralManager.cancelPeripheralConnection(node.peripheral)
         node.connectionState = .disconnected
         node.identity = nil
         connectedNode = nil
         characteristicsByUUID.removeAll()
+        notificationsReady = false
 
         // Fire any in-flight handler so operations fail cleanly
         let handler = fileResponseHandler
@@ -461,6 +483,47 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// Write metadata for a file on the connected node.
+    /// The metadata dict is sent as a CBOR map inside the command.
+    func writeFileMeta(name: String, metadata: ImageMetadata, completion: ((Bool) -> Void)? = nil) {
+        let metaDict = metadata.toCBORDict()
+        let cmd: [String: Any] = ["cmd": "write_meta", "name": name, "meta": metaDict]
+        enqueueOperation { [weak self] in
+            guard let self else { return }
+            self.sendFileCommand(cmd) { [weak self] response in
+                guard let self else { return }
+                defer { self.finishOperation() }
+                if let error = response["error"]?.stringValue {
+                    self.fileOperationError = error
+                    completion?(false)
+                    return
+                }
+                completion?(response["ok"]?.boolValue == true)
+            }
+        }
+    }
+
+    /// Read metadata for a file on the connected node.
+    func readFileMeta(name: String, completion: @escaping (ImageMetadata?) -> Void) {
+        let cmd: [String: Any] = ["cmd": "read_meta", "name": name]
+        enqueueOperation { [weak self] in
+            guard let self else { return }
+            self.sendFileCommand(cmd) { [weak self] response in
+                guard let self else { return }
+                defer { self.finishOperation() }
+                if response["error"]?.stringValue != nil {
+                    completion(nil)
+                    return
+                }
+                if let meta = response["meta"] {
+                    completion(ImageMetadata.fromCBOR(meta))
+                } else {
+                    completion(nil)
+                }
+            }
+        }
+    }
+
     /// Delete a file on the connected node.
     func deleteFile(name: String, completion: ((Bool) -> Void)? = nil) {
         enqueueOperation { [weak self] in
@@ -522,15 +585,37 @@ class BLEManager: NSObject, ObservableObject {
     /// `enqueueOperation` block so they don't interleave.
     private func sendFileCommand(_ command: [String: Any],
                                   handler: @escaping (CBORValue) -> Void) {
+        // Helper: synthesize an error response and deliver it to the caller.
+        // Calling the handler keeps the operation queue moving — every caller
+        // wraps its handler in a `defer { finishOperation() }` block, so as
+        // long as we ALWAYS deliver a response (even an error one) the queue
+        // will not deadlock.
+        func failCommand(_ message: String) {
+            print("[BLE] sendFileCommand failed: \(message)")
+            fileOperationError = message
+            isFileOperationInProgress = false
+            let errorResponse = CBORValue.map([
+                (.textString("error"), .textString(message))
+            ])
+            handler(errorResponse)
+        }
+
         guard connectedNode?.connectionState == .ready else {
-            fileOperationError = "Not connected to a node"
+            failCommand("Not connected to a node")
+            return
+        }
+        guard notificationsReady else {
+            failCommand("File response subscription not yet active")
             return
         }
         guard let char = characteristicsByUUID[WaxwingUUID.fileCommand] else {
-            fileOperationError = "File command characteristic not found"
+            failCommand("File command characteristic not found")
             return
         }
-        guard let peripheral = connectedNode?.peripheral else { return }
+        guard let peripheral = connectedNode?.peripheral else {
+            failCommand("No peripheral")
+            return
+        }
 
         isFileOperationInProgress = true
         fileOperationError = nil
@@ -538,6 +623,9 @@ class BLEManager: NSObject, ObservableObject {
             self?.isFileOperationInProgress = false
             handler(response)
         }
+
+        let cmdName = (command["cmd"] as? String) ?? "?"
+        print("[BLE] sendFileCommand: \(cmdName)")
 
         let data = CBOREncoder.encode(command)
         peripheral.writeValue(data, for: char, type: .withResponse)
@@ -633,12 +721,30 @@ extension BLEManager: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         guard let node = nodesByPeripheralID[peripheral.identifier] else { return }
+
+        print("[BLE] didDisconnectPeripheral: \(node.displayName) periphState=\(peripheral.state.rawValue) error=\(error?.localizedDescription ?? "none")")
+
+        // RACE GUARD: cancelPeripheralConnection is async, so the system can
+        // deliver this disconnect callback AFTER the user has already tapped
+        // Connect again. By that point peripheral.state will be .connecting
+        // (or .connected) for the new attempt — this callback is stale and
+        // we must NOT clobber the new connection's state. The peripheral
+        // is only truly torn down when peripheral.state == .disconnected.
+        guard peripheral.state == .disconnected else {
+            print("[BLE] Ignoring stale disconnect — a new connection is already in flight")
+            return
+        }
+
         node.connectionState = .disconnected
         node.identity = nil
 
-        if connectedNode?.id == node.id {
+        // Use object identity (===) on the peripheral, not just the UUID, so
+        // that even if some other path has put a fresh node into connectedNode
+        // for the same identifier, we don't tear down its state.
+        if let current = connectedNode, current.peripheral === peripheral {
             connectedNode = nil
             characteristicsByUUID.removeAll()
+            notificationsReady = false
 
             // Fire the in-flight handler with a disconnect error so
             // multi-step operations (chunked read/write) can call their
@@ -694,6 +800,10 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
 
+        // Reset our notification-ready flag for this fresh discovery; it
+        // will be set true once didUpdateNotificationStateFor confirms.
+        notificationsReady = false
+
         // Cache all discovered characteristics
         if let chars = service.characteristics {
             print("[BLE] Discovered \(chars.count) characteristics:")
@@ -705,7 +815,7 @@ extension BLEManager: CBPeripheralDelegate {
                 if props.contains(.writeWithoutResponse) { propList.append("WRITE_NR") }
                 if props.contains(.notify) { propList.append("NOTIFY") }
                 if props.contains(.indicate) { propList.append("INDICATE") }
-                print("[BLE]   \(char.uuid) [\(propList.joined(separator: ", "))]")
+                print("[BLE]   \(char.uuid) [\(propList.joined(separator: ", "))] isNotifying=\(char.isNotifying)")
                 characteristicsByUUID[char.uuid] = char
             }
         }
@@ -715,18 +825,57 @@ extension BLEManager: CBPeripheralDelegate {
         let hasFileResp = characteristicsByUUID[WaxwingUUID.fileResponse] != nil
         print("[BLE] File Command found: \(hasFileCmd), File Response found: \(hasFileResp)")
 
-        // Subscribe to file response notifications immediately so they're
-        // ready before the first file command is sent (setNotifyValue is async)
-        if let respChar = characteristicsByUUID[WaxwingUUID.fileResponse] {
-            peripheral.setNotifyValue(true, for: respChar)
+        // Subscribe to file response notifications. We do NOT proceed to
+        // read Device Identity yet — we wait for didUpdateNotificationStateFor
+        // to confirm the subscription is actually live before declaring the
+        // node ready. Otherwise the very first file command's response
+        // notification can be missed and the operation hangs.
+        guard let respChar = characteristicsByUUID[WaxwingUUID.fileResponse] else {
+            node.connectionState = .failed("File response characteristic missing")
+            return
         }
 
-        // Read Device Identity
-        if let identityChar = service.characteristics?.first(where: { $0.uuid == WaxwingUUID.deviceIdentity }) {
-            node.connectionState = .readingIdentity
-            statusMessage = "Reading device identity..."
-            peripheral.readValue(for: identityChar)
+        // On a reconnect, iOS may hand back a CACHED CBCharacteristic whose
+        // isNotifying is sticky from the previous session. In that case
+        // setNotifyValue(true) is a no-op and didUpdateNotificationStateFor
+        // never fires, so our handshake stalls forever. Force a fresh
+        // subscription by toggling off-then-on whenever it's already true.
+        if respChar.isNotifying {
+            print("[BLE] fileResponse already isNotifying; toggling off then on to force fresh CCCD")
+            peripheral.setNotifyValue(false, for: respChar)
         }
+        print("[BLE] Subscribing to fileResponse notifications")
+        peripheral.setNotifyValue(true, for: respChar)
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        guard let node = nodesByPeripheralID[peripheral.identifier] else { return }
+
+        if let error = error {
+            print("[BLE] didUpdateNotificationStateFor error: \(error)")
+            node.connectionState = .failed("Notify subscribe failed: \(error.localizedDescription)")
+            return
+        }
+
+        print("[BLE] didUpdateNotificationStateFor \(characteristic.uuid): isNotifying=\(characteristic.isNotifying)")
+
+        // We only gate readiness on the file response subscription becoming
+        // active (the off→on toggle's "off" callback is intentionally ignored).
+        guard characteristic.uuid == WaxwingUUID.fileResponse,
+              characteristic.isNotifying else { return }
+
+        notificationsReady = true
+
+        // Notifications confirmed live — now safe to read Device Identity.
+        guard let service = peripheral.services?.first(where: { $0.uuid == WaxwingUUID.service }),
+              let identityChar = service.characteristics?.first(where: { $0.uuid == WaxwingUUID.deviceIdentity }) else {
+            node.connectionState = .failed("Identity characteristic missing")
+            return
+        }
+
+        node.connectionState = .readingIdentity
+        statusMessage = "Reading device identity..."
+        peripheral.readValue(for: identityChar)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {

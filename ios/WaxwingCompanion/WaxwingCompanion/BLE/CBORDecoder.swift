@@ -20,6 +20,7 @@ enum CBORValue: CustomStringConvertible {
     case textString(String)
     case array([CBORValue])
     case map([(CBORValue, CBORValue)])
+    case float64(Double)
     case boolean(Bool)
     case null
 
@@ -31,6 +32,7 @@ enum CBORValue: CustomStringConvertible {
         case .textString(let s): return "\"\(s)\""
         case .array(let a): return "[\(a.map(\.description).joined(separator: ", "))]"
         case .map(let m): return "{\(m.map { "\($0.0): \($0.1)" }.joined(separator: ", "))}"
+        case .float64(let v): return "\(v)"
         case .boolean(let b): return b ? "true" : "false"
         case .null: return "null"
         }
@@ -52,6 +54,15 @@ enum CBORValue: CustomStringConvertible {
         switch self {
         case .unsignedInt(let v): return Int64(exactly: v)
         case .negativeInt(let v): return v
+        default: return nil
+        }
+    }
+
+    var doubleValue: Double? {
+        switch self {
+        case .float64(let v): return v
+        case .unsignedInt(let v): return Double(v)
+        case .negativeInt(let v): return Double(v)
         default: return nil
         }
     }
@@ -150,6 +161,32 @@ struct CBORDecoder {
         }
     }
 
+    /// Convert IEEE 754 half-precision (binary16) to Float.
+    private func halfToFloat(_ half: UInt16) -> Float {
+        let sign     = UInt32((half >> 15) & 0x1) << 31
+        let exponent = UInt32((half >> 10) & 0x1F)
+        let mantissa = UInt32(half & 0x3FF)
+
+        let bits: UInt32
+        if exponent == 0 {
+            if mantissa == 0 {
+                bits = sign // +-zero
+            } else {
+                // Subnormal: convert to normalized single precision
+                var m = mantissa
+                var e: UInt32 = 127 - 14
+                while m & 0x400 == 0 { m <<= 1; e -= 1 }
+                m &= 0x3FF
+                bits = sign | (e << 23) | (m << 13)
+            }
+        } else if exponent == 31 {
+            bits = sign | 0x7F800000 | (mantissa << 13) // Inf / NaN
+        } else {
+            bits = sign | ((exponent + 127 - 15) << 23) | (mantissa << 13)
+        }
+        return Float(bitPattern: bits)
+    }
+
     private mutating func decodeItem() throws -> CBORValue {
         let initial = try readByte()
         let majorType = initial >> 5
@@ -202,15 +239,24 @@ struct CBORDecoder {
             case 20: return .boolean(false)
             case 21: return .boolean(true)
             case 22: return .null
+            case 25:
+                // Half-precision float (IEEE 754 binary16)
+                let bytes = try readBytes(2)
+                let half = UInt16(bytes[0]) << 8 | UInt16(bytes[1])
+                return .float64(Double(halfToFloat(half)))
+            case 26:
+                // Single-precision float (IEEE 754 binary32)
+                let bytes = try readBytes(4)
+                let bits = UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16
+                      | UInt32(bytes[2]) << 8  | UInt32(bytes[3])
+                return .float64(Double(Float(bitPattern: bits)))
+            case 27:
+                // Double-precision float (IEEE 754 binary64)
+                let bytes = try readBytes(8)
+                var bits: UInt64 = 0
+                for b in bytes { bits = bits << 8 | UInt64(b) }
+                return .float64(Double(bitPattern: bits))
             default:
-                // Skip floats and other simple values for now
-                if additionalInfo == 25 {
-                    _ = try readBytes(2) // half-float
-                } else if additionalInfo == 26 {
-                    _ = try readBytes(4) // float
-                } else if additionalInfo == 27 {
-                    _ = try readBytes(8) // double
-                }
                 return .null
             }
 

@@ -1,5 +1,11 @@
 import SwiftUI
 import Combine
+import MapKit
+
+// String+Identifiable for fullScreenCover(item:) binding
+extension String: @retroactive Identifiable {
+    public var id: String { self }
+}
 
 /// Grid view showing Waxwing micro-images (.png files) on the connected node.
 /// Images are loaded from the in-memory cache first; any files not yet cached
@@ -14,6 +20,8 @@ struct ImageGridView: View {
 
     /// Currently active palette (for tinting placeholders).
     var palette: WaxwingPalette
+
+    @State private var selectedFileName: String?
 
     private var imageFiles: [NodeFile] {
         bleManager.fileList.filter { isWaxwingImage($0.name) }
@@ -34,8 +42,15 @@ struct ImageGridView: View {
                     LazyVGrid(columns: columns, spacing: 6) {
                         ForEach(imageFiles) { file in
                             gridCell(file)
-                                .onAppear {
-                                    fetchImageIfNeeded(file)
+                                .onAppear { fetchImageIfNeeded(file) }
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    if imageCache.images[file.name] != nil {
+                                        selectedFileName = file.name
+                                    } else if imageCache.hasFailed(file.name) {
+                                        imageCache.clearFailure(file.name)
+                                        fetchImageIfNeeded(file)
+                                    }
                                 }
                         }
                     }
@@ -51,6 +66,19 @@ struct ImageGridView: View {
             imageCache.resetFetchStates()
             for file in imageFiles {
                 fetchImageIfNeeded(file)
+            }
+        }
+        .fullScreenCover(item: $selectedFileName) { name in
+            if let img = imageCache.images[name] {
+                NavigationStack {
+                    ImageDetailView(
+                        fileName: name,
+                        image: img,
+                        caption: imageCache.caption(for: name),
+                        palette: palette
+                    )
+                    .environmentObject(bleManager)
+                }
             }
         }
     }
@@ -73,7 +101,7 @@ struct ImageGridView: View {
                     ProgressView()
                         .tint(Color(hex: palette.hexColors[2]))
                 } else if imageCache.hasFailed(file.name) {
-                    // Download failed — tap to retry
+                    // Download failed — tap to retry (handled by cell-level onTapGesture)
                     VStack(spacing: 4) {
                         Image(systemName: "exclamationmark.triangle")
                             .font(.title3)
@@ -81,10 +109,6 @@ struct ImageGridView: View {
                         Text("Tap to retry")
                             .font(.caption2)
                             .foregroundStyle(Color(hex: palette.hexColors[2]).opacity(0.4))
-                    }
-                    .onTapGesture {
-                        imageCache.clearFailure(file.name)
-                        fetchImageIfNeeded(file)
                     }
                 } else {
                     // Placeholder — fetch will start via onAppear

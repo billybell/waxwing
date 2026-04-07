@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import CoreLocation
 
 /// Full-screen sheet for composing a Waxwing micro-image.
 /// Flow: pick a photo → choose palette → adjust contrast/brightness → add caption → preview → upload.
@@ -30,6 +31,12 @@ struct ComposeImageView: View {
     @State private var isUploading = false
     @State private var uploadProgress: Double = 0
     @State private var errorMessage: String?
+
+    // Geo-tagging and identity opt-in
+    @State private var includeLocation = UserProfile.shared.includeLocationByDefault
+    @State private var includeIdentity = UserProfile.shared.includeIdentityByDefault
+    @ObservedObject private var locationManager = LocationManager.shared
+    @ObservedObject private var userProfile = UserProfile.shared
 
     /// Shared image cache for grid display.
     @ObservedObject var imageCache: WaxwingImageCache
@@ -66,6 +73,9 @@ struct ComposeImageView: View {
 
                         // Caption
                         captionSection
+
+                        // Metadata opt-ins
+                        metadataSection
 
                         // Size info
                         sizeSection
@@ -354,6 +364,59 @@ struct ComposeImageView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color(.secondarySystemGroupedBackground)))
     }
 
+    // MARK: - Metadata Opt-ins
+
+    private var metadataSection: some View {
+        VStack(spacing: 12) {
+            Toggle(isOn: $includeLocation) {
+                HStack(spacing: 6) {
+                    Image(systemName: "location.fill")
+                        .foregroundStyle(includeLocation ? .blue : .secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Tag location")
+                            .font(.subheadline)
+                        if includeLocation, let loc = locationManager.location {
+                            Text(String(format: "%.5f, %.5f", loc.coordinate.latitude, loc.coordinate.longitude))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else if includeLocation && !locationManager.isAuthorized {
+                            Text("Location permission required")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+            }
+            .onChange(of: includeLocation) { _, on in
+                if on { locationManager.requestLocation() }
+            }
+
+            Toggle(isOn: $includeIdentity) {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.fill")
+                        .foregroundStyle(includeIdentity ? .blue : .secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Include my name")
+                            .font(.subheadline)
+                        if includeIdentity {
+                            if userProfile.hasName {
+                                Text(userProfile.displayName)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                TextField("Display name", text: $userProfile.displayName)
+                                    .font(.caption2)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(.secondarySystemGroupedBackground)))
+    }
+
     // MARK: - Size Info
 
     private var sizeSection: some View {
@@ -526,19 +589,44 @@ struct ComposeImageView: View {
         errorMessage = nil
         uploadProgress = 0
 
+        // Build metadata if the user opted in to anything
+        let metadata = buildMetadata()
+
         bleManager.writeFileChunked(
             name: name,
             data: data,
             progress: { p in uploadProgress = p },
-            completion: { success in
-                isUploading = false
-                if success {
+            completion: { [metadata] success in
+                if success, let metadata {
+                    // Write metadata sidecar after successful file upload
+                    bleManager.writeFileMeta(name: name, metadata: metadata) { _ in
+                        isUploading = false
+                        onUploaded?()
+                        dismiss()
+                    }
+                } else if success {
+                    isUploading = false
                     onUploaded?()
                     dismiss()
                 } else {
+                    isUploading = false
                     errorMessage = bleManager.fileOperationError ?? "Upload failed"
                 }
             }
+        )
+    }
+
+    private func buildMetadata() -> ImageMetadata? {
+        let wantsLocation = includeLocation && locationManager.location != nil
+        let wantsIdentity = includeIdentity && userProfile.hasName
+
+        guard wantsLocation || wantsIdentity else { return nil }
+
+        return ImageMetadata(
+            uploader: wantsIdentity ? userProfile.displayName : nil,
+            latitude: wantsLocation ? locationManager.location?.coordinate.latitude : nil,
+            longitude: wantsLocation ? locationManager.location?.coordinate.longitude : nil,
+            timestamp: Date()
         )
     }
 

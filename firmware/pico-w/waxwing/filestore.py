@@ -86,14 +86,21 @@ def _total_stored():
 # Public API — queries
 # ---------------------------------------------------------------------------
 
+def _is_meta(name):
+    """Return True if this filename is a metadata sidecar."""
+    return name.endswith(".meta")
+
+
 def list_files():
     """
     Return a list of dicts: [{"name": "foo.txt", "size": 123}, ...]
-    Sorted alphabetically.
+    Sorted alphabetically.  Excludes .meta sidecar files.
     """
     _ensure_dir()
     result = []
     for entry in os.listdir(FILES_DIR):
+        if _is_meta(entry):
+            continue
         try:
             stat = os.stat(FILES_DIR + "/" + entry)
             result.append({"name": entry, "size": stat[6]})
@@ -140,22 +147,36 @@ def storage_info():
     Return a dict with storage stats:
       {"free": <bytes>, "used": <bytes>, "reserve": <bytes>,
        "file_count": <int>}
+    file_count excludes .meta sidecar files.
     """
     _ensure_dir()
     free = _fs_free()
     files = os.listdir(FILES_DIR)
     used = 0
+    count = 0
     for entry in files:
         try:
             used += os.stat(FILES_DIR + "/" + entry)[6]
         except OSError:
             pass
+        if not _is_meta(entry):
+            count += 1
     return {
         "free": free,
         "used": used,
         "reserve": STORAGE_RESERVE,
-        "file_count": len(files),
+        "file_count": count,
     }
+
+
+def content_file_count():
+    """Return the number of non-meta files in the store."""
+    _ensure_dir()
+    count = 0
+    for entry in os.listdir(FILES_DIR):
+        if not _is_meta(entry):
+            count += 1
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -411,8 +432,48 @@ def read_chunk(name, offset, size):
 # ---------------------------------------------------------------------------
 
 def delete_file(name):
-    """Delete a file. Raises OSError if it doesn't exist."""
+    """Delete a file and its metadata sidecar (if any)."""
     _ensure_dir()
     path = _path(name)
     os.remove(path)
     print("[filestore] Deleted {}".format(name))
+    # Also remove sidecar metadata
+    meta_name = name + ".meta"
+    try:
+        os.remove(_path(meta_name))
+        print("[filestore] Deleted sidecar {}".format(meta_name))
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Public API — metadata sidecars
+# ---------------------------------------------------------------------------
+
+def write_meta(name, data):
+    """
+    Write a metadata sidecar for the given filename.
+    `data` should be raw CBOR bytes.
+    """
+    _ensure_dir()
+    meta_name = name + ".meta"
+    _check_space(len(data))
+    path = _path(meta_name)
+    with open(path, "wb") as f:
+        f.write(data)
+    print("[filestore] Wrote meta for {} ({} bytes)".format(name, len(data)))
+
+
+def read_meta(name):
+    """
+    Read the metadata sidecar for the given filename.
+    Returns raw bytes, or None if no sidecar exists.
+    """
+    _ensure_dir()
+    meta_name = name + ".meta"
+    path = _path(meta_name)
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
