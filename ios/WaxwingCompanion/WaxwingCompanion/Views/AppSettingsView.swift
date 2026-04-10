@@ -12,6 +12,13 @@ struct AppSettingsView: View {
     @State private var showingBackupSheet  = false
     @State private var showingWipeConfirm  = false
     @State private var showingRestoreSheet = false
+    @State private var showingClearCacheConfirm = false
+
+    /// Local snapshot of the on-disk cache stats so the section refreshes
+    /// when the user clears the cache. Recomputed on appear and after
+    /// any clear action.
+    @State private var cacheFileCount: Int = 0
+    @State private var cacheBytes:     Int = 0
 
     var body: some View {
         NavigationStack {
@@ -20,6 +27,7 @@ struct AppSettingsView: View {
                 contentKeySection
                 defaultsSection
                 defaultNodeSection
+                imageCacheSection
                 aboutSection
                 dangerZoneSection
             }
@@ -29,6 +37,16 @@ struct AppSettingsView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .onAppear { refreshCacheStats() }
+            .alert("Clear image cache?", isPresented: $showingClearCacheConfirm) {
+                Button("Clear", role: .destructive) {
+                    WaxwingImageCache.shared.clearAll()
+                    refreshCacheStats()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This deletes the locally cached copies of all Waxwing images. They will be re-downloaded from the node next time you view them.")
             }
             .sheet(isPresented: $showingBackupSheet) {
                 MnemonicBackupView()
@@ -172,6 +190,51 @@ struct AppSettingsView: View {
             Text("Default Node")
         } footer: {
             Text("If set, the app will prefer this Waxwing node when more than one is in range.")
+        }
+    }
+
+    // MARK: - Image Cache
+
+    private var imageCacheSection: some View {
+        Section {
+            HStack {
+                Image(systemName: "photo.stack")
+                    .foregroundStyle(.teal)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Cached images")
+                        .font(.body)
+                    Text("\(cacheFileCount) file\(cacheFileCount == 1 ? "" : "s") · \(formatBytes(cacheBytes))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Button(role: .destructive) {
+                showingClearCacheConfirm = true
+            } label: {
+                Label("Clear image cache", systemImage: "trash")
+            }
+            .disabled(cacheFileCount == 0)
+        } header: {
+            Text("Image Cache")
+        } footer: {
+            Text("Waxwing images are cached on this device by content hash, so reconnecting to a node skips re-downloading anything you already have. Clear the cache to force fresh downloads (useful for testing).")
+        }
+    }
+
+    private func refreshCacheStats() {
+        cacheFileCount = WaxwingImageCache.shared.diskFileCount()
+        cacheBytes     = WaxwingImageCache.shared.diskByteCount()
+    }
+
+    private func formatBytes(_ bytes: Int) -> String {
+        if bytes < 1024 {
+            return "\(bytes) B"
+        } else if bytes < 1024 * 1024 {
+            return String(format: "%.1f KB", Double(bytes) / 1024.0)
+        } else {
+            return String(format: "%.2f MB", Double(bytes) / (1024.0 * 1024.0))
         }
     }
 

@@ -10,8 +10,55 @@
 
 import os
 import gc
+import hashlib
 
 FILES_DIR = "/files"
+
+# Length of the truncated SHA-256 prefix included in file manifests.
+# A single BLE notification has to fit in MTU-3 bytes (~244 with the
+# default iOS-negotiated MTU). The full 32-byte digest blew that budget
+# once a handful of images were on the node, wedging the listing.
+# 8 bytes = 64 bits is plenty for collision-resistance against the tiny
+# datasets a single Pico W ever holds.
+HASH_PREFIX_BYTES = 8
+
+# In-memory cache: filename -> truncated sha256 digest bytes.
+# Invalidated whenever a file is written, appended-to, or deleted.
+_hash_cache = {}
+
+
+def _file_hash(name):
+    """
+    Return the truncated SHA-256 digest of a file as raw bytes
+    (length = `HASH_PREFIX_BYTES`), computing and caching it on first
+    request.
+
+    Reads the file in 512-byte blocks to keep RAM usage tiny.
+    Returns None if the file can't be hashed (missing, IO error, etc.).
+    """
+    cached = _hash_cache.get(name)
+    if cached is not None:
+        return cached
+    try:
+        h = hashlib.sha256()
+        with open(FILES_DIR + "/" + name, "rb") as f:
+            while True:
+                block = f.read(512)
+                if not block:
+                    break
+                h.update(block)
+        digest = h.digest()[:HASH_PREFIX_BYTES]
+        _hash_cache[name] = digest
+        return digest
+    except Exception as e:
+        print("[filestore] hash failed for {}: {}".format(name, e))
+        return None
+
+
+def _invalidate_hash(name):
+    """Drop any cached hash for a file (call after writes/deletes)."""
+    if name in _hash_cache:
+        del _hash_cache[name]
 MAX_FILE_SIZE = 2048          # single-shot text file limit (bytes)
 MAX_CHUNKED_FILE_SIZE = 512 * 1024   # 512 KB hard cap per file
 STORAGE_RESERVE = 32 * 1024  # keep 32 KB free for firmware / GC headroom
@@ -91,23 +138,63 @@ def _is_meta(name):
     return name.endswith(".meta")
 
 
-def list_files():
+# Per-page entry limit for paginated listings.
+#
+# A single BLE notification has to fit in MTU-3 bytes (~244 with the
+# default iOS-negotiated MTU, ~509 if the central asks for the max).
+# Each entry serializes to roughly:
+#     name(~30) + size(~5) + hash(10) + per-entry map overhead(~5)
+#   ≈ 50 bytes
+#
+# 4 entries × 50 = 200 bytes plus the surrounding `{ok, files, next_offset}`
+# wrapper (~30 bytes) keeps every page well under 256 bytes, which is
+# safely below ANY plausible MTU we'll see in the field.
+LIST_PAGE_SIZE = 4
+
+
+def _all_content_names():
+    """Sorted list of every non-meta filename in the store."""
+    _ensure_dir()
+    names = [n for n in os.listdir(FILES_DIR) if not _is_meta(n)]
+    names.sort()
+    return names
+
+
+def list_files(offset=0, limit=LIST_PAGE_SIZE):
     """
-    Return a list of dicts: [{"name": "foo.txt", "size": 123}, ...]
+    Return a single page of the file listing.
+
+    Returns a tuple ``(entries, next_offset)`` where:
+      - ``entries`` is a list of dicts: [{"name": ..., "size": ..., "hash": ...}, ...]
+      - ``next_offset`` is the offset of the first NOT-YET-RETURNED entry,
+        or ``None`` when this page is the final one.
+
+    Pagination is mandatory because the full manifest very quickly exceeds
+    the BLE notification MTU once a handful of images are stored. Callers
+    that want every entry must loop until ``next_offset`` is ``None``.
+
     Sorted alphabetically.  Excludes .meta sidecar files.
     """
-    _ensure_dir()
-    result = []
-    for entry in os.listdir(FILES_DIR):
-        if _is_meta(entry):
-            continue
+    names = _all_content_names()
+    total = len(names)
+    if offset < 0:
+        offset = 0
+    end = min(offset + limit, total)
+
+    page = []
+    for entry in names[offset:end]:
         try:
             stat = os.stat(FILES_DIR + "/" + entry)
-            result.append({"name": entry, "size": stat[6]})
+            entry_info = {"name": entry, "size": stat[6]}
+            digest = _file_hash(entry)
+            if digest is not None:
+                entry_info["hash"] = digest
+            page.append(entry_info)
         except OSError:
             pass
-    result.sort(key=lambda f: f["name"])
-    return result
+
+    next_offset = end if end < total else None
+    return page, next_offset
 
 
 def read_file(name):
@@ -197,6 +284,7 @@ def write_file(name, content):
     path = _path(name)
     with open(path, "w") as f:
         f.write(content)
+    _invalidate_hash(name)
     print("[filestore] Wrote {} ({} bytes)".format(name, len(content)))
 
 
@@ -218,6 +306,7 @@ def write_file_binary(name, data):
     path = _path(name)
     with open(path, "wb") as f:
         f.write(data)
+    _invalidate_hash(name)
     print("[filestore] Wrote binary {} ({} bytes)".format(name, len(data)))
 
 
@@ -263,6 +352,9 @@ def chunked_start(name, total_size):
 
     _ensure_dir()
     _check_space(total_size)
+
+    # Any prior hash for this name is no longer valid
+    _invalidate_hash(name)
 
     path = _path(name)
 
@@ -347,6 +439,7 @@ def chunked_finish(name):
 
     fname = _chunked_state["name"]
     _chunked_state = None
+    _invalidate_hash(fname)
     gc.collect()
     print("[filestore] Chunked write complete: {} ({} bytes)".format(
         fname, written))
@@ -373,9 +466,10 @@ def chunked_abort(name):
     except OSError:
         pass
 
-    print("[filestore] Chunked write aborted: {}".format(
-        _chunked_state["name"]))
+    aborted_name = _chunked_state["name"]
+    print("[filestore] Chunked write aborted: {}".format(aborted_name))
     _chunked_state = None
+    _invalidate_hash(aborted_name)
     gc.collect()
 
 
@@ -436,6 +530,7 @@ def delete_file(name):
     _ensure_dir()
     path = _path(name)
     os.remove(path)
+    _invalidate_hash(name)
     print("[filestore] Deleted {}".format(name))
     # Also remove sidecar metadata
     meta_name = name + ".meta"

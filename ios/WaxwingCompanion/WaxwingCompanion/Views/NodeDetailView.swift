@@ -13,8 +13,10 @@ struct NodeDetailView: View {
     @State private var showingCompose = false
     @State private var viewMode: ViewMode = .files
 
-    /// Shared cache for locally composed images.
-    @StateObject private var imageCache = WaxwingImageCache()
+    /// Process-wide cache for Waxwing images. Backed by a content-addressed
+    /// on-disk store so already-downloaded images persist across reconnects
+    /// and app launches.
+    @ObservedObject private var imageCache = WaxwingImageCache.shared
 
     enum ViewMode: String, CaseIterable {
         case files = "Files"

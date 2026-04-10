@@ -84,8 +84,23 @@ enum ConnectionState: Equatable {
 struct NodeFile: Identifiable, Equatable {
     let name: String
     let size: Int
+    /// SHA-256 of the file contents, as reported by the node's manifest.
+    /// `nil` if the firmware did not include a hash.
+    let hash: Data?
+
+    init(name: String, size: Int, hash: Data? = nil) {
+        self.name = name
+        self.size = size
+        self.hash = hash
+    }
 
     var id: String { name }
+
+    /// Lowercase hex of the SHA-256 hash, or `nil` if no hash is available.
+    var hashHex: String? {
+        guard let hash = hash else { return nil }
+        return hash.map { String(format: "%02x", $0) }.joined()
+    }
 
     /// Human-readable file size
     var sizeDescription: String {

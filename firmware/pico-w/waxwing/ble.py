@@ -315,6 +315,23 @@ class WaxwingBLE:
             self._connected   = False
             self._conn_handle = None
 
+            # Clear the file-response characteristic value so a reconnecting
+            # peer can't read a stale payload left over from the previous
+            # session. Without this, iOS would re-subscribe, issue a new
+            # file command, and race against a notify for a response that
+            # was already sitting in the GATT attribute table — causing the
+            # 20-second watchdog hang on the iOS side.
+            from .constants import CHAR_FILE_RESPONSE
+            h_resp = self._handles.get(CHAR_FILE_RESPONSE)
+            if h_resp is not None:
+                try:
+                    self._ble.gatts_write(h_resp, b"")
+                    print("[ble] Cleared file response characteristic "
+                          "on disconnect")
+                except Exception as e:
+                    print("[ble] Failed to clear file response char: "
+                          "{}".format(e))
+
             if self._on_disconnect_cb:
                 try:
                     self._on_disconnect_cb(conn_handle)
