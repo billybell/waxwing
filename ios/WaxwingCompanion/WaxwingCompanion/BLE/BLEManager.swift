@@ -41,6 +41,20 @@ class BLEManager: NSObject, ObservableObject {
     /// Pending file operation completion handler (for the currently active command).
     private var fileResponseHandler: ((CBORValue) -> Void)?
 
+    /// Watchdog that fails the in-flight command if no response arrives
+    /// in time. Without this, a single dropped/truncated notification
+    /// from the node would silently wedge the entire operation queue.
+    private var fileResponseWatchdog: DispatchWorkItem?
+
+    /// How long we wait for a single file-response notification before
+    /// declaring the command failed. The slowest legitimate command is
+    /// the first paginated `ls` against a node whose hash cache is cold
+    /// — the Pico has to stream-hash every image in the page, which can
+    /// take several seconds for half a megabyte of pixels. 20 s gives
+    /// us plenty of headroom while still catching real wedges fast
+    /// enough to feel responsive.
+    private let fileResponseTimeout: TimeInterval = 20.0
+
     /// Queue of top-level file operations waiting to run.
     /// Each entry is a closure that kicks off the operation; it will be
     /// called only after the previous operation has fully completed.
@@ -134,6 +148,8 @@ class BLEManager: NSObject, ObservableObject {
         // Fire any in-flight handler so operations fail cleanly
         let handler = fileResponseHandler
         fileResponseHandler = nil
+        fileResponseWatchdog?.cancel()
+        fileResponseWatchdog = nil
         isFileOperationInProgress = false
         pendingOperations.removeAll()
         operationInFlight = false
@@ -155,25 +171,58 @@ class BLEManager: NSObject, ObservableObject {
     // on every exit path (success, error, early return).
 
     /// Request the list of files stored on the connected node.
+    ///
+    /// The node returns the manifest in pages — a single BLE notification
+    /// can only carry MTU-3 bytes (~244 with the default iOS-negotiated
+    /// MTU), and the full listing easily exceeds that with even a handful
+    /// of images. We accumulate pages here and only publish `fileList`
+    /// once the final page (no `next_offset`) arrives.
     func listFiles() {
         enqueueOperation { [weak self] in
             guard let self else { return }
-            self.sendFileCommand(["cmd": "ls"]) { [weak self] response in
-                guard let self else { return }
-                defer { self.finishOperation() }
-                if let error = response["error"]?.stringValue {
-                    self.fileOperationError = error
-                    return
-                }
-                guard case .array(let items)? = response["files"] else {
-                    self.fileOperationError = "Invalid file list response"
-                    return
-                }
-                self.fileList = items.compactMap { item -> NodeFile? in
-                    guard let name = item["name"]?.stringValue else { return nil }
-                    let size = item["size"]?.uintValue ?? 0
-                    return NodeFile(name: name, size: Int(size))
-                }
+            self.fetchFilesPage(offset: 0, accumulated: [])
+        }
+    }
+
+    /// Internal helper that issues `{"cmd": "ls", "offset": N}` and
+    /// recurses until the node stops sending a `next_offset`. The
+    /// outer enqueueOperation already serializes us against other
+    /// operations, so it is safe to chain sendFileCommand calls without
+    /// re-enqueuing — we hold the slot until the final page resolves.
+    private func fetchFilesPage(offset: Int, accumulated: [NodeFile]) {
+        let cmd: [String: Any] = ["cmd": "ls", "offset": offset]
+        sendFileCommand(cmd) { [weak self] response in
+            guard let self else { return }
+
+            if let error = response["error"]?.stringValue {
+                self.fileOperationError = error
+                self.finishOperation()
+                return
+            }
+
+            guard case .array(let items)? = response["files"] else {
+                self.fileOperationError = "Invalid file list response"
+                self.finishOperation()
+                return
+            }
+
+            let pageEntries: [NodeFile] = items.compactMap { item in
+                guard let name = item["name"]?.stringValue else { return nil }
+                let size = item["size"]?.uintValue ?? 0
+                let hash = item["hash"]?.dataValue
+                return NodeFile(name: name, size: Int(size), hash: hash)
+            }
+
+            let merged = accumulated + pageEntries
+
+            if let next = response["next_offset"]?.uintValue {
+                // More pages remain — chain the next request inside the
+                // same operation slot.
+                self.fetchFilesPage(offset: Int(next), accumulated: merged)
+            } else {
+                // Final page — publish and release the operation slot.
+                self.fileList = merged
+                self.finishOperation()
             }
         }
     }
@@ -619,16 +668,67 @@ class BLEManager: NSObject, ObservableObject {
 
         isFileOperationInProgress = true
         fileOperationError = nil
-        fileResponseHandler = { [weak self] response in
-            self?.isFileOperationInProgress = false
-            handler(response)
-        }
 
         let cmdName = (command["cmd"] as? String) ?? "?"
-        print("[BLE] sendFileCommand: \(cmdName)")
+        let sentAt = Date()
+        let extra: String = {
+            if let off = command["offset"] as? Int { return " offset=\(off)" }
+            if let name = command["name"] as? String { return " name=\(name)" }
+            return ""
+        }()
+        print("[BLE] sendFileCommand: \(cmdName)\(extra)")
+
+        // Wrap the caller's handler so it ALSO cancels the watchdog and
+        // resets in-progress state on every exit path.
+        let wrapped: (CBORValue) -> Void = { [weak self] response in
+            guard let self else { return }
+            let elapsed = Date().timeIntervalSince(sentAt)
+            print(String(format: "[BLE] sendFileCommand: %@%@ ← response in %.2fs",
+                         cmdName, extra, elapsed))
+            self.fileResponseWatchdog?.cancel()
+            self.fileResponseWatchdog = nil
+            self.isFileOperationInProgress = false
+            handler(response)
+        }
+        fileResponseHandler = wrapped
 
         let data = CBOREncoder.encode(command)
         peripheral.writeValue(data, for: char, type: .withResponse)
+
+        // Arm the watchdog. If the response notification never arrives
+        // (truncated by MTU, lost, dropped because the link went idle,
+        // etc.) we synthesize an error response so the operation queue
+        // never gets permanently wedged.
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            // If somebody already delivered a real response, the wrapped
+            // handler will have cleared fileResponseHandler. In that case
+            // we have nothing to do.
+            guard self.fileResponseHandler != nil else { return }
+            print("[BLE] sendFileCommand WATCHDOG fired for \(cmdName) — no response after \(self.fileResponseTimeout)s")
+            self.deliverFileResponseError("No response from node (timeout)")
+        }
+        fileResponseWatchdog = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + fileResponseTimeout,
+                                      execute: watchdog)
+    }
+
+    /// Synthesize a CBOR error response and deliver it to the in-flight
+    /// command handler (if any). This is the single chokepoint for
+    /// "the response failed somehow" — it guarantees finishOperation()
+    /// runs and the queue keeps moving.
+    private func deliverFileResponseError(_ message: String) {
+        fileOperationError = message
+        isFileOperationInProgress = false
+        let handler = fileResponseHandler
+        fileResponseHandler = nil
+        fileResponseWatchdog?.cancel()
+        fileResponseWatchdog = nil
+        guard let handler else { return }
+        let errorResponse = CBORValue.map([
+            (.textString("error"), .textString(message))
+        ])
+        handler(errorResponse)
     }
 
     // MARK: - Private Helpers
@@ -751,6 +851,8 @@ extension BLEManager: CBCentralManagerDelegate {
             // completion handlers rather than silently disappearing.
             let handler = fileResponseHandler
             fileResponseHandler = nil
+            fileResponseWatchdog?.cancel()
+            fileResponseWatchdog = nil
             isFileOperationInProgress = false
             pendingOperations.removeAll()
             operationInFlight = false
@@ -900,22 +1002,33 @@ extension BLEManager: CBPeripheralDelegate {
     }
 
     private func handleFileResponse(data: Data?) {
+        // CRITICAL: every exit path here MUST end up either calling the
+        // pending fileResponseHandler or routing through
+        // deliverFileResponseError. Returning silently leaves the
+        // operation queue wedged forever (every queued upload / read /
+        // listing will sit in pendingOperations and never run).
         guard let data = data, !data.isEmpty else {
-            fileOperationError = "Empty file response"
-            isFileOperationInProgress = false
+            print("[BLE] handleFileResponse: empty notification — failing in-flight command")
+            deliverFileResponseError("Empty file response")
             return
         }
+
+        print("[BLE] handleFileResponse: \(data.count) bytes")
 
         guard let cbor = try? CBORDecoder.decode(data) else {
-            fileOperationError = "Failed to decode file response"
-            isFileOperationInProgress = false
+            // This is the smoking gun for an MTU overflow on the node:
+            // a partial CBOR blob arrives that our decoder rejects.
+            print("[BLE] handleFileResponse: CBOR decode failed for \(data.count) bytes")
+            deliverFileResponseError("Failed to decode file response (\(data.count) bytes — possible MTU overflow)")
             return
         }
 
-        if let handler = fileResponseHandler {
-            fileResponseHandler = nil
-            handler(cbor)
-        }
+        let handler = fileResponseHandler
+        fileResponseHandler = nil
+        fileResponseWatchdog?.cancel()
+        fileResponseWatchdog = nil
+        isFileOperationInProgress = false
+        handler?(cbor)
     }
 
     private func handleDeviceIdentityRead(node: WaxwingNode, data: Data?) {

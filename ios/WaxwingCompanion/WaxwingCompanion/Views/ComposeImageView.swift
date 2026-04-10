@@ -576,10 +576,13 @@ struct ComposeImageView: View {
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         let name = "waxwing_\(formatter.string(from: Date())).png"
 
-        // Cache the preview image and caption for the grid view
+        // Cache the preview image and caption for the grid view, and
+        // persist the PNG bytes to the content-addressed disk cache so
+        // we won't re-download our own upload on the next reconnect.
         if let img = previewImage {
-            imageCache.store(
+            imageCache.storeLocal(
                 name: name,
+                data: data,
                 image: img,
                 caption: trimmedCaption.isEmpty ? nil : trimmedCaption
             )

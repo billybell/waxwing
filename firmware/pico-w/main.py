@@ -79,6 +79,16 @@ def _on_disconnect(conn_handle):
     except Exception as e:
         print("[main] chunked_abort on disconnect failed: {}".format(e))
 
+    # Clear the in-memory hash cache so the next session's `ls` recomputes
+    # fresh digests. Stale entries here don't cause the hang directly, but
+    # they can mask filesystem changes across reconnects and make bugs of
+    # this shape much harder to diagnose.
+    try:
+        filestore._hash_cache.clear()
+        print("[main] Cleared file hash cache on disconnect")
+    except Exception as e:
+        print("[main] hash cache clear on disconnect failed: {}".format(e))
+
     _refresh_manifest_count()
 
 
@@ -114,8 +124,25 @@ def _on_file_command(data):
         print("[main] File cmd: {}".format(cmd))
 
         if cmd == "ls":
-            files = filestore.list_files()
-            return cbor.dumps({"cmd": "ls", "files": files})
+            # Paginated listing. The companion calls us repeatedly with
+            # increasing `offset` values until we omit `next_offset`.
+            # Pagination is mandatory because the full manifest exceeds
+            # the BLE notification MTU once a handful of images exist.
+            offset = cmd_map.get("offset", 0)
+            try:
+                offset = int(offset)
+            except (TypeError, ValueError):
+                offset = 0
+            t0 = time.ticks_ms()
+            entries, next_offset = filestore.list_files(offset=offset)
+            elapsed_ms = time.ticks_diff(time.ticks_ms(), t0)
+            response = {"cmd": "ls", "ok": True, "files": entries,
+                        "offset": offset}
+            if next_offset is not None:
+                response["next_offset"] = next_offset
+            print("[main] ls offset={} -> {} entries in {} ms".format(
+                offset, len(entries), elapsed_ms))
+            return cbor.dumps(response)
 
         elif cmd == "read":
             name = cmd_map.get("name", "")
