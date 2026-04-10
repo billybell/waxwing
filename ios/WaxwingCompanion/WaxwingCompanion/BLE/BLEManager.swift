@@ -803,7 +803,25 @@ extension BLEManager: CBCentralManagerDelegate {
         node.connectionState = .connected
         statusMessage = "Connected to \(node.displayName)"
 
-        // Start service discovery
+        // FIX A: Every new session starts from a clean slate. If the app was
+        // relaunched (or we reconnected to the same peripheral), CoreBluetooth
+        // may hand us back cached CBService / CBCharacteristic objects whose
+        // internal state (isNotifying, CCCD handle bindings) is stale. Wipe
+        // our local caches and any in-flight file-operation state BEFORE
+        // kicking off discovery so nothing from a prior session leaks in.
+        characteristicsByUUID.removeAll()
+        notificationsReady = false
+        fileResponseHandler = nil
+        fileResponseWatchdog?.cancel()
+        fileResponseWatchdog = nil
+        isFileOperationInProgress = false
+        pendingOperations.removeAll()
+        operationInFlight = false
+
+        // Start service discovery. iOS will reuse its GATT attribute cache
+        // for the known peripheral, which is fine — the important thing is
+        // that OUR bookkeeping above is reset so the fresh didDiscover /
+        // didUpdateNotificationStateFor callbacks rebuild everything.
         peripheral.delegate = self
         peripheral.discoverServices([WaxwingUUID.service])
     }
@@ -937,17 +955,38 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
 
-        // On a reconnect, iOS may hand back a CACHED CBCharacteristic whose
-        // isNotifying is sticky from the previous session. In that case
-        // setNotifyValue(true) is a no-op and didUpdateNotificationStateFor
-        // never fires, so our handshake stalls forever. Force a fresh
-        // subscription by toggling off-then-on whenever it's already true.
-        if respChar.isNotifying {
-            print("[BLE] fileResponse already isNotifying; toggling off then on to force fresh CCCD")
-            peripheral.setNotifyValue(false, for: respChar)
-        }
-        print("[BLE] Subscribing to fileResponse notifications")
+        // FIX B: Do NOT toggle setNotifyValue(false) then (true) on reconnect.
+        // That off→on dance was an attempt to force a fresh CCCD write when
+        // iOS handed back a cached characteristic with isNotifying==true, but
+        // in practice it leaves CoreBluetooth's delivery state in a half-open
+        // condition where the first inbound notification routes to
+        // didUpdateValueFor but subsequent rapid notifications on the same
+        // characteristic are silently dropped — exactly the "ls offset=0 ok,
+        // ls offset=4 never arrives" pattern we've been seeing.
+        //
+        // Instead, call setNotifyValue(true) unconditionally. If iOS considers
+        // the subscription already live, didUpdateNotificationStateFor will
+        // still fire (iOS re-delivers the current state on a redundant call
+        // for a freshly discovered service). If it doesn't, the notificationsReady
+        // gate will surface the problem instead of hiding it behind a toggle.
+        print("[BLE] Subscribing to fileResponse notifications (isNotifying=\(respChar.isNotifying))")
         peripheral.setNotifyValue(true, for: respChar)
+
+        // Safety net: if iOS reports the characteristic as already notifying
+        // AND doesn't bother firing didUpdateNotificationStateFor for our
+        // redundant call, we'd wedge waiting for the ready handshake. Seed
+        // notificationsReady from the current isNotifying state after a
+        // brief delay; didUpdateNotificationStateFor can still upgrade it
+        // first if it arrives normally.
+        if respChar.isNotifying {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self = self else { return }
+                if !self.notificationsReady, respChar.isNotifying {
+                    print("[BLE] notificationsReady seeded from cached isNotifying=true")
+                    self.peripheral(peripheral, didUpdateNotificationStateFor: respChar, error: nil)
+                }
+            }
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
