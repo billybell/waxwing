@@ -276,7 +276,7 @@ struct PhotoUploadView: View {
             guard let data = try await item.loadTransferable(type: Data.self) else { return }
             // Decode + downscale off the main thread so we don't pin a
             // full-resolution UIImage in memory.
-            let scaled = await Task.detached(priority: .userInitiated) { () -> (UIImage, Data)? in
+            let scaled = await Task.detached(priority: .userInitiated) { @MainActor () -> (UIImage, Data)? in
                 guard let img = UIImage(data: data) else { return nil }
                 let down = downscale(img, maxDimension: 2048)
                 guard let jpeg = down.jpegData(compressionQuality: 0.5) else { return nil }

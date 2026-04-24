@@ -118,12 +118,12 @@ class WaxwingBLE:
         self._resp_data = _build_resp_data(identity["node_name"])
 
         # Callbacks registered by main.py
-        self._on_connect_cb    = None
+        self._on_connect_cb     = None
         self._on_disconnect_cb = None
-        self._on_write_cb      = None
+        self._on_write_cb       = None
 
         # File command handler (set by main.py)
-        self._on_file_cmd_cb   = None
+        self._on_file_cmd_cb    = None
 
     # -----------------------------------------------------------------------
     # Public API
@@ -325,12 +325,24 @@ class WaxwingBLE:
             h_resp = self._handles.get(CHAR_FILE_RESPONSE)
             if h_resp is not None:
                 try:
+                    # Aggressive CCCD clearing: write 0x0000 to descriptor
+                    # handle (char_handle + 1) to explicitly unsubscribe the
+                    # central. We do this twice with a small delay to ensure
+                    # the peripheral stack fully processes the unsubscription.
+                    # This is critical for iOS, which caches the CCCD state
+                    # across connections.
+                    cccd_handle = h_resp + 1
+                    self._ble.gatts_write(cccd_handle, bytes([0x00, 0x00]))
+                    print("[ble] Unsubscribed CCCD for file response characteristic (attempt 1)")
+                    # Small delay to let the stack process the unsubscription
+                    import time
+                    time.sleep(0.01)
+                    self._ble.gatts_write(cccd_handle, bytes([0x00, 0x00]))
+                    print("[ble] Unsubscribed CCCD for file response characteristic (attempt 2)")
                     self._ble.gatts_write(h_resp, b"")
-                    print("[ble] Cleared file response characteristic "
-                          "on disconnect")
+                    print("[ble] Cleared file response characteristic on disconnect")
                 except Exception as e:
-                    print("[ble] Failed to clear file response char: "
-                          "{}".format(e))
+                    print("[ble] Failed to clear CCCD/characteristic: {}".format(e))
 
             if self._on_disconnect_cb:
                 try:
@@ -345,10 +357,18 @@ class WaxwingBLE:
             conn_handle, attr_handle = data
             value = self._ble.gatts_read(attr_handle)
             uuid_str = self._handle_to_uuid.get(attr_handle, "unknown")
-            print("[ble] Write: session={} handle={} char={} len={}".format(
+            # Check if this is a CCCD write (descriptor write)
+            is_cccd = False
+            if attr_handle in self._handles.values():
+                char_uuid = self._handle_to_uuid.get(attr_handle)
+                if char_uuid and char_uuid in ['CE57580E-494E-4700-8000-00805F9B34FB']:
+                    is_cccd = True
+            print("[ble] Write: session={} handle={} char={} len={} cccd_write={}".format(
                 self._session_id, conn_handle,
                 uuid_str[-8:] if uuid_str != "unknown" else "unknown",
-                len(value)))
+                len(value), is_cccd))
+            if is_cccd:
+                print("[ble] CCCD descriptor write: value={}".format(value.hex()))
 
             # Defensive: a write should never arrive for a connection we
             # don't think we have. If it does, our connect/disconnect
@@ -368,6 +388,8 @@ class WaxwingBLE:
                         if h_resp is not None:
                             self._ble.gatts_write(h_resp, response)
                             try:
+                                print("[ble] [NOTIFY] Attempting to send {} bytes to handle {}".format(
+                                    len(response), conn_handle))
                                 self._ble.gatts_notify(conn_handle, h_resp)
                                 print("[ble] File response sent "
                                       "({} bytes, handle={})".format(

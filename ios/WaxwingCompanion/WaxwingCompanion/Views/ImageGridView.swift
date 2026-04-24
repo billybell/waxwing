@@ -153,7 +153,10 @@ struct ImageGridView: View {
         let name = file.name
 
         // Already in memory? nothing to do.
-        if imageCache.images[name] != nil { return }
+        if imageCache.images[name] != nil {
+            print("[Cache] Memory hit for \(name)")
+            return
+        }
 
         // Hydrate from disk if the manifest hash matches a blob we have.
         if imageCache.hasCached(file) {
@@ -327,6 +330,7 @@ class WaxwingImageCache: ObservableObject {
                   let data = try? Data(contentsOf: url),
                   let img  = UIImage(data: data) else { continue }
             images[file.name] = img
+            print("[Cache] Disk hit for \(file.name)")
             if let cap = PNGMetadata.extractCaption(from: data),
                !cap.isEmpty {
                 captions[file.name] = cap

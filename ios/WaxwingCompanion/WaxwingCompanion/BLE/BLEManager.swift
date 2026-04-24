@@ -50,10 +50,10 @@ class BLEManager: NSObject, ObservableObject {
     /// declaring the command failed. The slowest legitimate command is
     /// the first paginated `ls` against a node whose hash cache is cold
     /// — the Pico has to stream-hash every image in the page, which can
-    /// take several seconds for half a megabyte of pixels. 20 s gives
+    /// take several seconds for half a megabyte of pixels. 60 s gives
     /// us plenty of headroom while still catching real wedges fast
     /// enough to feel responsive.
-    private let fileResponseTimeout: TimeInterval = 20.0
+    private let fileResponseTimeout: TimeInterval = 60.0
 
     /// Queue of top-level file operations waiting to run.
     /// Each entry is a closure that kicks off the operation; it will be
@@ -680,8 +680,7 @@ class BLEManager: NSObject, ObservableObject {
 
         // Wrap the caller's handler so it ALSO cancels the watchdog and
         // resets in-progress state on every exit path.
-        let wrapped: (CBORValue) -> Void = { [weak self] response in
-            guard let self else { return }
+        let wrapped: (CBORValue) -> Void = { [unowned self] response in
             let elapsed = Date().timeIntervalSince(sentAt)
             print(String(format: "[BLE] sendFileCommand: %@%@ ← response in %.2fs",
                          cmdName, extra, elapsed))
@@ -720,15 +719,16 @@ class BLEManager: NSObject, ObservableObject {
     private func deliverFileResponseError(_ message: String) {
         fileOperationError = message
         isFileOperationInProgress = false
+        // Capture handler and clear it atomically to prevent race conditions
+        // with handleFileResponse or timeout handling
         let handler = fileResponseHandler
         fileResponseHandler = nil
         fileResponseWatchdog?.cancel()
         fileResponseWatchdog = nil
-        guard let handler else { return }
         let errorResponse = CBORValue.map([
             (.textString("error"), .textString(message))
         ])
-        handler(errorResponse)
+        handler?(errorResponse)
     }
 
     // MARK: - Private Helpers
@@ -874,14 +874,9 @@ extension BLEManager: CBCentralManagerDelegate {
             isFileOperationInProgress = false
             pendingOperations.removeAll()
             operationInFlight = false
-
-            if let handler {
-                // Synthesize a CBOR-like error response
-                let errorResponse = CBORValue.map([
-                    (.textString("error"), .textString("BLE disconnected"))
-                ])
-                handler(errorResponse)
-            }
+            handler?(CBORValue.map([
+                (.textString("error"), .textString("BLE disconnected"))
+            ]))
 
             statusMessage = "Disconnected from \(node.displayName)"
         }
@@ -1002,21 +997,34 @@ extension BLEManager: CBPeripheralDelegate {
 
         // We only gate readiness on the file response subscription becoming
         // active (the off→on toggle's "off" callback is intentionally ignored).
-        guard characteristic.uuid == WaxwingUUID.fileResponse,
-              characteristic.isNotifying else { return }
+        guard characteristic.uuid == WaxwingUUID.fileResponse else { return }
 
-        notificationsReady = true
+        if characteristic.isNotifying {
+            notificationsReady = true
+            print("[BLE] File response notifications are now ready")
 
-        // Notifications confirmed live — now safe to read Device Identity.
-        guard let service = peripheral.services?.first(where: { $0.uuid == WaxwingUUID.service }),
-              let identityChar = service.characteristics?.first(where: { $0.uuid == WaxwingUUID.deviceIdentity }) else {
-            node.connectionState = .failed("Identity characteristic missing")
-            return
+            // Notifications confirmed live — now safe to read Device Identity.
+            guard let service = peripheral.services?.first(where: { $0.uuid == WaxwingUUID.service }),
+                  let identityChar = service.characteristics?.first(where: { $0.uuid == WaxwingUUID.deviceIdentity }) else {
+                node.connectionState = .failed("Identity characteristic missing")
+                return
+            }
+
+            node.connectionState = .readingIdentity
+            statusMessage = "Reading device identity..."
+            peripheral.readValue(for: identityChar)
+        } else {
+            // Subscription was unsubscribed
+            notificationsReady = false
+            print("[BLE] File response notifications were unsubscribed")
+
+            // If we were connected, mark as disconnected
+            if node.connectionState == .connected || node.connectionState == .readingIdentity || node.connectionState == .ready {
+                node.connectionState = .disconnected
+                node.identity = nil
+                statusMessage = "Disconnected"
+            }
         }
-
-        node.connectionState = .readingIdentity
-        statusMessage = "Reading device identity..."
-        peripheral.readValue(for: identityChar)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -1062,6 +1070,8 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
 
+        // Capture handler and clear it atomically to prevent race conditions
+        // with watchdog firing or disconnect handling
         let handler = fileResponseHandler
         fileResponseHandler = nil
         fileResponseWatchdog?.cancel()

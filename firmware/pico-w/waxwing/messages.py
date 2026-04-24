@@ -16,6 +16,7 @@
 #     "unattended_mode":str | null, # "relay" | "publisher" | "archive" | null
 #     "manifest_count": int,        # number of items available (0 in Phase 1)
 #     "timestamp":      int,        # seconds since epoch (0 if no RTC)
+#      "session_id":     int,          # monotonic session counter (0 on first boot)
 #   }
 
 import time
@@ -31,7 +32,8 @@ from .constants import (
 def build_device_identity(identity, manifest_count=0,
                           attended=False,
                           unattended_mode=UNATTENDED_RELAY,
-                          caps=PICO_W_CAPS):
+                          caps=PICO_W_CAPS,
+                          session_id=0):
     """
     Build and return the CBOR-encoded Device Identity payload.
 
@@ -47,6 +49,8 @@ def build_device_identity(identity, manifest_count=0,
         One of the UNATTENDED_* constants, or None if attended.
     caps : int
         Capability flags bitmask.
+    session_id : int
+        Monotonic session counter from BLE manager (increments on each connect).
 
     Returns
     -------
@@ -74,6 +78,7 @@ def build_device_identity(identity, manifest_count=0,
         "attended":        attended,
         "unattended_mode": unattended_mode if not attended else None,
         "manifest_count":  manifest_count,
+         "session_id":      session_id,
         "timestamp":       ts,
     }
 
@@ -94,7 +99,7 @@ def parse_device_identity(data):
     if not isinstance(obj, dict):
         raise ValueError("messages: device identity is not a CBOR map")
 
-    required = ("protocol", "v", "tpk", "caps", "firmware", "attended")
+    required = ("protocol", "v", "tpk", "caps", "firmware", "attended", "session_id")
     for key in required:
         if key not in obj:
             raise ValueError("messages: missing required key '{}'".format(key))

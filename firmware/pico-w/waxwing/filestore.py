@@ -539,6 +539,7 @@ def delete_file(name):
         print("[filestore] Deleted sidecar {}".format(meta_name))
     except OSError:
         pass
+    _invalidate_hash(meta_name)
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +557,7 @@ def write_meta(name, data):
     path = _path(meta_name)
     with open(path, "wb") as f:
         f.write(data)
+    _invalidate_hash(meta_name)
     print("[filestore] Wrote meta for {} ({} bytes)".format(name, len(data)))
 
 

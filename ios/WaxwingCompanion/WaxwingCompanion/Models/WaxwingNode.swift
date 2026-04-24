@@ -178,6 +178,7 @@ struct DeviceIdentity {
     let firmware: String?
     let firmwareVersion: String?
     let timestamp: UInt64?
+    let sessionId: UInt64
 
     /// Hex string of full Transport Public Key
     var tpkHex: String {
@@ -212,7 +213,8 @@ struct DeviceIdentity {
             protocolName: cbor["protocol"]?.stringValue,
             firmware: cbor["firmware"]?.stringValue,
             firmwareVersion: cbor["firmware_ver"]?.stringValue,
-            timestamp: cbor["timestamp"]?.uintValue
+            timestamp: cbor["timestamp"]?.uintValue,
+            sessionId: cbor["session_id"]?.uintValue ?? 0
         )
     }
 }
