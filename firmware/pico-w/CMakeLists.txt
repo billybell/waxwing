@@ -33,14 +33,17 @@ add_executable(${PROJECT_NAME}
 # Add pico_stdlib library which aggregates commonly used features
 target_link_libraries(${PROJECT_NAME}
     pico_stdlib
-    pico_cyw43_arch_lwip_poll   // Provides cyw43_arch_init() for Pico W BLE + WiFi
+    pico_cyw43_arch_lwip_poll
+    pico_btstack_cyw43
+    pico_btstack_ble
 )
 
 # Add include directories
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${PICO_SDK_PATH}/lib/btstack/src)
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${PICO_SDK_PATH}/lib/btstack/platform/embedded)
-target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${PICO_SDK_PATH}/lib/btstack)
+target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_arch/include)
+target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${PICO_SDK_PATH}/lib/cyw43-driver/src)
 
 # Compile GATT file to generate ATT server database
 find_package(Python3 REQUIRED COMPONENTS Interpreter)

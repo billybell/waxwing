@@ -1,0 +1,22 @@
+# Build directories
+build/
+*/build/
+
+# Object files
+*.o
+*.elf
+*.uf2
+*.map
+*.bin
+
+# Dependency files
+*.d
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
