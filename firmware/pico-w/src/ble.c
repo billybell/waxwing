@@ -80,28 +80,35 @@ static void   start_advertising_internal(void);
 // Helpers
 // ============================================================
 
-/// Encode a CBOR unsigned integer value. Returns number of bytes written (1-5).
+/// Encode a CBOR unsigned integer (major type 0). Returns bytes written (1-5).
+///
+/// CBOR major type is the top 3 bits of the initial byte. For unsigned int
+/// that is 000 — so the header is `0x00 | additional_info`. The previous
+/// small-value branch used `0x20 | value`, which is major type 1 (negative
+/// integer) and was decoded by iOS/Python as `-1 - value`; that silently
+/// corrupted every small uint in the identity payload and caused the
+/// iOS-side `DeviceIdentity.fromCBOR` to reject the blob on the `v` field.
 static size_t cbor_encode_uint(uint8_t *buf, uint32_t value) {
     if (value <= 23) {
-        buf[0] = (uint8_t)(0x20 | value);
+        buf[0] = (uint8_t)value;                  // major type 0, inline value
         return 1;
-     } else if (value <= 0xFF) {
-        buf[0] = 0x18;
+    } else if (value <= 0xFF) {
+        buf[0] = 0x18;                            // 1-byte argument follows
         buf[1] = (uint8_t)value;
         return 2;
-     } else if (value <= 0xFFFF) {
-        buf[0] = 0x19;
+    } else if (value <= 0xFFFF) {
+        buf[0] = 0x19;                            // 2-byte argument follows
         buf[1] = (value >> 8) & 0xFF;
         buf[2] = value & 0xFF;
         return 3;
-     } else {
-        buf[0] = 0x1B;
+    } else {
+        buf[0] = 0x1A;                            // 4-byte argument follows
         buf[1] = (value >> 24) & 0xFF;
         buf[2] = (value >> 16) & 0xFF;
         buf[3] = (value >> 8) & 0xFF;
         buf[4] = value & 0xFF;
         return 5;
-     }
+    }
 }
 
 /// Encode a CBOR text string. Returns number of bytes written.
@@ -140,65 +147,75 @@ static size_t cbor_encode_byte_str(uint8_t *buf, const uint8_t *data, uint16_t l
 
 /// Serialise waxwing_device_identity_t into a single CBOR map.
 /// Produces the Phase-1 schema expected by iOS/Python:
-///     { "protocol": str, "v": int, "tpk": bytes, "caps": int,
+///     { "protocol": str, "v": int, "name": str, "tpk": bytes, "caps": int,
 ///       "firmware": str, "firmware_ver": str, "attended": bool,
-///       "unattended_mode": str|nil, "manifest_count": int, "timestamp": int }
+///       "unattended_mode": str|<absent>, "manifest_count": int,
+///       "timestamp": int }
 static void build_identity_from_struct(const waxwing_device_identity_t *id) {
     size_t pos = 0;
 
-     // Determine field count: attended mode (mode==0) has no unattended_mode key
-    uint8_t n_fields = 10;                                    // default: unattended
-    if (id->mode == 0) {                                      // attended → skip unattended_mode
-        n_fields = 9;
-     }
+    // 11 fields when unattended_mode is present, 10 otherwise. `id->mode == 0`
+    // means attended (no unattended_mode key).
+    uint8_t n_fields = (id->mode == 0) ? 10 : 11;
 
-     // Map header: major type 5 with entry count (n ≤ 24 → single byte header)
+    // Map header (major type 5). n_fields ≤ 23 → single byte header.
     waxwing_identity_data[pos++] = (uint8_t)(0xA0 | n_fields);
 
-     // "protocol" = "waxwing-mesh"
+    // "protocol" = "waxwing-mesh"
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "protocol", 8);
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "waxwing-mesh", 12);
 
-     // "v" = uint8 (protocol version)
+    // "v" = uint (protocol version)
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "v", 1);
     pos += cbor_encode_uint(&waxwing_identity_data[pos], id->protocol_version);
 
-     // "tpk" = byte string(32) transport public key
+    // "name" = human-readable node identifier (e.g. "WX:AABBCCDD")
+    size_t name_len = strnlen(id->node_name, sizeof(id->node_name));
+    pos += cbor_encode_text_str(&waxwing_identity_data[pos], "name", 4);
+    pos += cbor_encode_text_str(&waxwing_identity_data[pos], id->node_name,
+                                (uint16_t)name_len);
+
+    // "tpk" = byte string(32) transport public key
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "tpk", 3);
     pos += cbor_encode_byte_str(&waxwing_identity_data[pos], id->tpk, 32);
 
-     // "caps" = uint (capability bitmask)
+    // "caps" = uint (capability bitmask)
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "caps", 4);
     pos += cbor_encode_uint(&waxwing_identity_data[pos], id->capabilities);
 
-     // "firmware" = "pico-w"
+    // "firmware" = "pico-w"
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "firmware", 8);
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "pico-w", 6);
 
-     // "firmware_ver" = "0.1.0"
+    // "firmware_ver" = "0.1.0"
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "firmware_ver", 12);
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "0.1.0", 5);
 
-     // "attended" = bool (true when mode == 0, false otherwise)
+    // "attended" = bool (true when mode == 0, false otherwise)
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "attended", 8);
-    waxwing_identity_data[pos++] = id->mode == 0 ? 0xF5 : 0xF4;   // true / false
+    waxwing_identity_data[pos++] = (id->mode == 0) ? 0xF5 : 0xF4;  // true/false
 
-     // "unattended_mode" = str | null (only when mode != 0)
+    // "unattended_mode" = str (only present when mode != 0)
     if (id->mode != 0) {
         pos += cbor_encode_text_str(&waxwing_identity_data[pos], "unattended_mode", 15);
         pos += cbor_encode_text_str(&waxwing_identity_data[pos], "relay", 5);
-     }
+    }
 
-     // "manifest_count" = uint8 (always 0 for Phase 1)
+    // "manifest_count" = uint (always 0 for Phase 1)
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "manifest_count", 14);
     pos += cbor_encode_uint(&waxwing_identity_data[pos], 0);
 
-     // "timestamp" = uint32 (placeholder: hardcoded to 1 — real RTC in Phase 2)
+    // "timestamp" = uint (placeholder: hardcoded to 1 — real RTC in Phase 2)
     pos += cbor_encode_text_str(&waxwing_identity_data[pos], "timestamp", 9);
     pos += cbor_encode_uint(&waxwing_identity_data[pos], 1);
 
-    printf("[ble] identity CBOR blob: %zu bytes\r\n", pos);
     waxwing_identity_len = pos;
+
+    printf("[ble] identity CBOR blob: %zu bytes, first 16:", pos);
+    for (size_t i = 0; i < pos && i < 16; i++) {
+        printf(" %02x", waxwing_identity_data[i]);
+    }
+    printf("\r\n");
 }
 
 // ============================================================
