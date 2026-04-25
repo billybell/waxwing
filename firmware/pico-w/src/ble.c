@@ -258,34 +258,78 @@ static uint16_t att_read_cb(hci_con_handle_t conn_handle, uint16_t att_handle,
 static int att_write_cb(hci_con_handle_t conn_handle, uint16_t att_handle,
                         uint16_t transaction_mode, uint16_t offset,
                         uint8_t *buffer, uint16_t buffer_size) {
-     (void)conn_handle;
-     (void)transaction_mode;
-     (void)offset;
+    (void)conn_handle;
 
     switch (att_handle) {
         case ATT_CHARACTERISTIC_CE57580E_494E_4700_8000_00805F9B34FB_01_CLIENT_CONFIGURATION_HANDLE:
-              // CCCD write: enable/disable notifications on File Response
+            // CCCD write: enable/disable notifications on File Response
             if (buffer_size == 2) {
                 g_notif_enabled = (little_endian_read_16(buffer, 0) ==
                         GATT_CLIENT_CHARACTERISTICS_CONFIGURATION_NOTIFICATION);
-             }
+            }
             break;
 
         case ATT_CHARACTERISTIC_CE57580D_494E_4700_8000_00805F9B34FB_01_VALUE_HANDLE:
-              // File Command write from central - store and forward to callback
-            if (buffer_size > 0 && buffer_size <= BLE_MAX_DATA_SIZE) {
-                memcpy(g_file_cmd_buf, buffer, buffer_size);
-                g_file_cmd_len = buffer_size;
+            // File Command write from central. iOS uses ATT prepared writes
+            // (long writes) whenever a value exceeds MTU - 3 bytes, so we
+            // have to handle four transaction modes here:
+            //
+            //   NONE    — single Write Request that fits in one MTU.
+            //             Buffer is the whole value; dispatch immediately.
+            //   ACTIVE  — one fragment of a long write at `offset`.
+            //             Stash it in g_file_cmd_buf at that offset; do
+            //             NOT dispatch yet.
+            //   EXECUTE — central is committing the queued long write.
+            //             Dispatch the assembled buffer.
+            //   CANCEL  — central abandoned the long write. Drop it.
+            //
+            // Without this, a single ATT_TRANSACTION_MODE_ACTIVE fragment
+            // would get dispatched as if it were a complete CBOR command,
+            // fail to parse, and we'd reply "bad request" — which is the
+            // exact symptom we hit when iOS's command exceeded the MTU.
+            switch (transaction_mode) {
+                case ATT_TRANSACTION_MODE_NONE:
+                    if (buffer_size > 0 && buffer_size <= BLE_MAX_DATA_SIZE) {
+                        memcpy(g_file_cmd_buf, buffer, buffer_size);
+                        g_file_cmd_len = buffer_size;
+                        if (g_on_write_cb != NULL) {
+                            g_on_write_cb(g_file_cmd_buf, g_file_cmd_len);
+                        }
+                    }
+                    break;
 
-                if (g_on_write_cb != NULL) {
-                    g_on_write_cb(g_file_cmd_buf, g_file_cmd_len);
-                  }
-             }
+                case ATT_TRANSACTION_MODE_ACTIVE: {
+                    size_t end = (size_t)offset + (size_t)buffer_size;
+                    if (end <= BLE_MAX_DATA_SIZE) {
+                        memcpy(g_file_cmd_buf + offset, buffer, buffer_size);
+                        if (end > g_file_cmd_len) g_file_cmd_len = end;
+                    } else {
+                        // Fragment doesn't fit — abandon the in-flight
+                        // assembly so we don't half-commit garbage on EXECUTE.
+                        printf("[ble] long-write fragment (%u@%u) overflows %u-byte buffer\r\n",
+                               buffer_size, offset, (unsigned)BLE_MAX_DATA_SIZE);
+                        g_file_cmd_len = 0;
+                    }
+                    break;
+                }
+
+                case ATT_TRANSACTION_MODE_EXECUTE:
+                    if (g_file_cmd_len > 0 && g_on_write_cb != NULL) {
+                        g_on_write_cb(g_file_cmd_buf, g_file_cmd_len);
+                    }
+                    g_file_cmd_len = 0;
+                    break;
+
+                case ATT_TRANSACTION_MODE_CANCEL:
+                default:
+                    g_file_cmd_len = 0;
+                    break;
+            }
             break;
 
         default:
             break;
-     }
+    }
     return 0;
 }
 
@@ -510,6 +554,12 @@ bool ble_is_connected(void) {
 
 uint16_t ble_get_conn_handle(void) {
     return g_conn_handle;
+}
+
+uint16_t ble_get_mtu(void) {
+    if (!g_connected || g_conn_handle == 0xFFFF) return 23;
+    uint16_t mtu = att_server_get_mtu(g_conn_handle);
+    return (mtu >= 23) ? mtu : 23;
 }
 
 bool ble_send_file_response(const uint8_t *data, size_t len) {

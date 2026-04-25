@@ -9,11 +9,14 @@ struct ComposeImageView: View {
     @ObservedObject var node: WaxwingNode
     @Environment(\.dismiss) private var dismiss
 
-    // Source image
+    // Source image — held only briefly during prepare(); we drop the
+    // full-resolution UIImage as soon as the 128×128 PreparedSource is
+    // available, so slider tweaks don't pin the original photo in memory.
     @State private var selectedItem: PhotosPickerItem?
-    @State private var sourceImage: UIImage?
     @State private var showingCamera = false
     @State private var cameraImage: UIImage?
+    @State private var preparedSource: PreparedSource?
+    @State private var isPreparing = false
 
     // Processing parameters
     @State private var selectedPaletteId = "cedar"
@@ -25,7 +28,10 @@ struct ComposeImageView: View {
     // Processed output
     @State private var previewImage: UIImage?
     @State private var pngData: Data?
-    @State private var isProcessing = false
+
+    // The render task we cancel when slider/palette state moves faster
+    // than we can render — keeps work from piling up across slider drags.
+    @State private var renderTask: Task<Void, Never>?
 
     // Upload state
     @State private var isUploading = false
@@ -58,7 +64,7 @@ struct ComposeImageView: View {
                     // Source picker
                     sourceSection
 
-                    if sourceImage != nil {
+                    if preparedSource != nil {
                         // Rotation controls
                         rotationSection
 
@@ -98,7 +104,7 @@ struct ComposeImageView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Send") { uploadImage() }
-                        .disabled(sourceImage == nil || isUploading || pngData == nil)
+                        .disabled(preparedSource == nil || isUploading || pngData == nil)
                         .fontWeight(.semibold)
                 }
             }
@@ -109,22 +115,36 @@ struct ComposeImageView: View {
             .onChange(of: cameraImage) { _, img in
                 if let img {
                     rotationSteps = 0
-                    sourceImage = img
-                    reprocess()
+                    Task { await prepareSource(from: img) }
                 }
             }
             .fullScreenCover(isPresented: $showingCamera) {
                 CameraView(image: $cameraImage).ignoresSafeArea()
             }
             .interactiveDismissDisabled(isUploading)
+            .alert("Upload failed", isPresented: errorAlertPresented) {
+                Button("OK") { errorMessage = nil }
+            } message: {
+                Text(errorMessage ?? "")
+            }
         }
+    }
+
+    /// Two-way binding so dismissing the alert clears `errorMessage`
+    /// (otherwise a non-nil message would re-present the alert each
+    /// time SwiftUI re-renders the view).
+    private var errorAlertPresented: Binding<Bool> {
+        Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )
     }
 
     // MARK: - Source Section
 
     private var sourceSection: some View {
         VStack(spacing: 12) {
-            if sourceImage == nil {
+            if preparedSource == nil {
                 // No image yet — prominent picker
                 VStack(spacing: 16) {
                     Image(systemName: "camera.viewfinder")
@@ -187,7 +207,7 @@ struct ComposeImageView: View {
 
             Button {
                 rotationSteps = (rotationSteps + 3) % 4  // 90° counter-clockwise
-                reprocess()
+                rerender()
             } label: {
                 Image(systemName: "rotate.left")
                     .font(.title3)
@@ -196,7 +216,7 @@ struct ComposeImageView: View {
 
             Button {
                 rotationSteps = (rotationSteps + 1) % 4  // 90° clockwise
-                reprocess()
+                rerender()
             } label: {
                 Image(systemName: "rotate.right")
                     .font(.title3)
@@ -234,7 +254,7 @@ struct ComposeImageView: View {
                 ForEach(WaxwingPalettes.all) { pal in
                     Button {
                         selectedPaletteId = pal.id
-                        reprocess()
+                        rerender()
                     } label: {
                         VStack(spacing: 6) {
                             // Swatch row
@@ -289,7 +309,7 @@ struct ComposeImageView: View {
                         .scaledToFit()
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .padding(4)
-                } else if isProcessing {
+                } else if isPreparing {
                     ProgressView()
                         .tint(.white)
                 }
@@ -323,7 +343,7 @@ struct ComposeImageView: View {
                 }
                 Slider(value: Binding(
                     get: { contrast },
-                    set: { contrast = $0; reprocess() }
+                    set: { contrast = $0; rerender() }
                 ), in: 0.5...2.5, step: 0.05)
                 .tint(accentColor)
             }
@@ -339,7 +359,7 @@ struct ComposeImageView: View {
                 }
                 Slider(value: Binding(
                     get: { brightness },
-                    set: { brightness = $0; reprocess() }
+                    set: { brightness = $0; rerender() }
                 ), in: -0.4...0.4, step: 0.02)
                 .tint(accentColor)
             }
@@ -380,15 +400,21 @@ struct ComposeImageView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         } else if includeLocation && !locationManager.isAuthorized {
-                            Text("Location permission required")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
+                            locationPermissionPrompt
                         }
                     }
                 }
             }
             .onChange(of: includeLocation) { _, on in
                 if on { locationManager.requestLocation() }
+            }
+            .onChange(of: locationManager.authorizationStatus) { _, _ in
+                // Once permission is granted (or re-granted), kick a
+                // location fix so the toggle's address text fills in
+                // without the user needing to flip the switch again.
+                if includeLocation && locationManager.isAuthorized {
+                    locationManager.requestLocation()
+                }
             }
 
             Toggle(isOn: $includeIdentity) {
@@ -469,10 +495,7 @@ struct ComposeImageView: View {
         do {
             if let data = try await item.loadTransferable(type: Data.self),
                let img = UIImage(data: data) {
-                await MainActor.run {
-                    sourceImage = img
-                    reprocess()
-                }
+                await prepareSource(from: img)
             }
         } catch {
             await MainActor.run {
@@ -481,82 +504,51 @@ struct ComposeImageView: View {
         }
     }
 
-    /// Run rotation + dithering on a background queue.
-    private func reprocess() {
-        guard let src = sourceImage else { return }
-        isProcessing = true
+    /// Reduce the full-resolution photo down to a 128×128 grayscale buffer
+    /// off the main thread. The full-res `UIImage` is only alive for the
+    /// duration of this call — once the `PreparedSource` is in @State,
+    /// the original is dropped and slider changes operate on the small
+    /// buffer instead. We use a `DispatchQueue` continuation rather than
+    /// `Task.detached` because `UIImage` isn't `Sendable` and we don't
+    /// want to fight strict concurrency over a one-shot background hop.
+    @MainActor
+    private func prepareSource(from image: UIImage) async {
+        isPreparing = true
+        renderTask?.cancel()
+        renderTask = nil
+
+        let prepared: PreparedSource? = await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: WaxwingImageProcessor.prepare(source: image))
+            }
+        }
+
+        isPreparing = false
+        preparedSource = prepared
+        rerender()
+    }
+
+    /// Re-run the cheap render stage (contrast + brightness + rotation +
+    /// dither + palette) on the cached `PreparedSource`. Cancels any
+    /// in-flight render so a fast slider drag doesn't queue stale work.
+    private func rerender() {
+        guard let prepared = preparedSource else { return }
         let pal = selectedPalette
         let c = contrast
         let b = brightness
         let steps = rotationSteps
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            // Normalize EXIF orientation first so the raw pixel buffer
-            // matches what the user sees.  Without this, camera photos
-            // (which carry orientation metadata like .right) would be
-            // double-rotated: once by image.draw() respecting EXIF and
-            // once by our manual rotation transform.
-            let normalized = Self.normalizeOrientation(src)
-
-            // Apply manual rotation (if any) on the orientation-fixed image
-            let rotated = steps > 0
-                ? Self.rotateImage(normalized, steps: steps)
-                : normalized
-
-            let result = WaxwingImageProcessor.process(
-                source: rotated, palette: pal, contrast: c, brightness: b
+        renderTask?.cancel()
+        renderTask = Task.detached(priority: .userInitiated) {
+            let result = WaxwingImageProcessor.render(
+                prepared: prepared, palette: pal,
+                rotationSteps: steps, contrast: c, brightness: b
             )
-            DispatchQueue.main.async {
-                isProcessing = false
+            if Task.isCancelled { return }
+            await MainActor.run {
                 previewImage = result?.image
                 pngData = result?.pngData
             }
-        }
-    }
-
-    /// Bake EXIF orientation into the actual pixels so that CGImage-level
-    /// operations (crop, rotate, pixel extraction) see the correct layout.
-    private static func normalizeOrientation(_ image: UIImage) -> UIImage {
-        guard image.imageOrientation != .up else { return image }
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = image.scale
-        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
-        return renderer.image { _ in
-            image.draw(at: .zero)
-        }
-    }
-
-    /// Rotate a UIImage by the given number of 90° clockwise steps.
-    /// The image MUST already be orientation-normalized (`.up`).
-    private static func rotateImage(_ image: UIImage, steps: Int) -> UIImage {
-        let normalizedSteps = steps % 4
-        guard normalizedSteps > 0 else { return image }
-
-        let radians = CGFloat(normalizedSteps) * (.pi / 2.0)
-        let size = image.size
-
-        // For 90° and 270° rotations, width and height are swapped
-        let newSize: CGSize
-        if normalizedSteps == 1 || normalizedSteps == 3 {
-            newSize = CGSize(width: size.height, height: size.width)
-        } else {
-            newSize = size
-        }
-
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = image.scale
-        let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
-
-        return renderer.image { context in
-            let ctx = context.cgContext
-            ctx.translateBy(x: newSize.width / 2, y: newSize.height / 2)
-            ctx.rotate(by: radians)
-            image.draw(in: CGRect(
-                x: -size.width / 2,
-                y: -size.height / 2,
-                width: size.width,
-                height: size.height
-            ))
         }
     }
 
@@ -631,6 +623,37 @@ struct ComposeImageView: View {
             longitude: wantsLocation ? locationManager.location?.coordinate.longitude : nil,
             timestamp: Date()
         )
+    }
+
+    /// Inline view that asks for location permission, or nudges the user
+    /// to Settings if they previously denied it. Replaces the inert
+    /// "Location permission required" caption that used to sit there.
+    @ViewBuilder
+    private var locationPermissionPrompt: some View {
+        switch locationManager.authorizationStatus {
+        case .denied, .restricted:
+            Button {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            } label: {
+                Text("Location denied — open Settings")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .underline()
+            }
+            .buttonStyle(.plain)
+        default:
+            Button {
+                locationManager.requestPermission()
+            } label: {
+                Text("Tap to grant location permission")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .underline()
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private func formatBytes(_ bytes: Int) -> String {

@@ -285,6 +285,21 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// Largest data payload we'll put into a single `write_chunk` command,
+    /// derived from the peripheral's actual ATT write capacity. Each
+    /// command also carries a CBOR envelope (`cmd`, `name`, `offset` keys
+    /// plus headers), so we subtract a generous ~80-byte budget. With a
+    /// freshly-negotiated iOS MTU of 247 this leaves room for ~160-byte
+    /// data chunks — large enough to keep transfers reasonably fast,
+    /// small enough that one command always fits in one ATT write
+    /// (no prepared/long-write reassembly needed on the firmware).
+    private func safeChunkSize() -> Int {
+        let envelopeBudget = 80
+        let max = connectedNode?.peripheral
+            .maximumWriteValueLength(for: .withResponse) ?? 100
+        return Swift.max(40, max - envelopeBudget)
+    }
+
     /// Write binary data to the node in chunks.
     ///
     /// The node-side protocol accepts chunked commands:
@@ -292,19 +307,17 @@ class BLEManager: NSObject, ObservableObject {
     ///   2. `{cmd: "write_chunk", name: "photo.jpg", offset: N, data: <bytes>}` — append chunk
     ///   3. `{cmd: "write_end", name: "photo.jpg"}` — finalise and close
     ///
-    /// Chunk data is sent as a CBOR byte string (major type 2) — no base64
-    /// encoding — to maximize throughput within BLE write limits.
-    ///
-    /// The default chunk size of 384 raw bytes produces CBOR payloads of
-    /// ~440 bytes, which fits comfortably within the Pico W's 512-byte
-    /// BLE ATT write limit after MTU negotiation.
+    /// `chunkSize` defaults to whatever the peripheral can swallow in one
+    /// ATT write (`safeChunkSize()`); pass an explicit value only when
+    /// you have a specific reason to override it.
     func writeFileChunked(
         name: String,
         data: Data,
-        chunkSize: Int = 384,
+        chunkSize: Int? = nil,
         progress: ((Double) -> Void)? = nil,
         completion: ((Bool) -> Void)? = nil
     ) {
+        let resolvedChunkSize = chunkSize ?? safeChunkSize()
         enqueueOperation { [weak self] in
             guard let self else { return }
             let totalSize = data.count
@@ -327,7 +340,7 @@ class BLEManager: NSObject, ObservableObject {
                     name: name,
                     data: data,
                     offset: 0,
-                    chunkSize: chunkSize,
+                    chunkSize: resolvedChunkSize,
                     totalSize: totalSize,
                     progress: progress,
                     completion: completion
@@ -421,10 +434,11 @@ class BLEManager: NSObject, ObservableObject {
     /// read_start response (for very small files).
     func readFileChunked(
         name: String,
-        chunkSize: Int = 384,
+        chunkSize: Int? = nil,
         progress: ((Double) -> Void)? = nil,
         completion: @escaping (Data?) -> Void
     ) {
+        let resolvedChunkSize = chunkSize ?? safeChunkSize()
         enqueueOperation { [weak self] in
             guard let self else { return }
             self.sendFileCommand(["cmd": "read_start", "name": name]) { [weak self] response in
@@ -461,7 +475,7 @@ class BLEManager: NSObject, ObservableObject {
                     name: name,
                     accumulated: Data(),
                     offset: 0,
-                    chunkSize: chunkSize,
+                    chunkSize: resolvedChunkSize,
                     totalSize: total,
                     progress: progress,
                     completion: completion

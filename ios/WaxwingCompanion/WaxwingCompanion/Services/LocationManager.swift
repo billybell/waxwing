@@ -23,7 +23,14 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     /// Request "when in use" authorization if not already granted.
+    /// The system dialog appears at most once per install — if no prompt
+    /// ever shows up and `authorizationStatus` stays `.notDetermined`,
+    /// the most likely cause is a missing
+    /// `NSLocationWhenInUseUsageDescription` key in the *built* app's
+    /// Info.plist. (Modern Xcode targets generate Info.plist from build
+    /// settings, so a sibling Info.plist file may not be picked up.)
     func requestPermission() {
+        print("[LocationManager] requestPermission status=\(authorizationStatus.rawValue)")
         if authorizationStatus == .notDetermined {
             manager.requestWhenInUseAuthorization()
         }

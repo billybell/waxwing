@@ -69,6 +69,11 @@ bool ble_is_connected(void);
 // Get current connection handle (0xFFFF if not connected).
 uint16_t ble_get_conn_handle(void);
 
+// Get the negotiated ATT MTU for the current connection. Returns the
+// BLE default of 23 when there is no active connection or before MTU
+// exchange has completed.
+uint16_t ble_get_mtu(void);
+
 // Send notification on File Response characteristic.
 // Returns true if queued successfully, false otherwise.
 bool ble_send_file_response(const uint8_t *data, size_t len);

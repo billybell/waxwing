@@ -37,6 +37,14 @@
 // We don't give btstack a malloc, so use a fixed-size ATT DB.
 #define MAX_ATT_DB_SIZE 512
 
+// Allow the central to negotiate an ATT MTU large enough for our chunked
+// file commands to land in a single Write Request (no prepared/long-write
+// reassembly path). 247 is the BLE 4.2 LE Data Length Extension cap that
+// modern iPhones happily negotiate. With MTU=247 the ATT payload is 244,
+// so a 160-byte data chunk plus our ~70-byte CBOR envelope fits with
+// margin.
+#define MAX_ATT_MTU 247
+
 // NVM configuration
 #define NVM_NUM_DEVICE_DB_ENTRIES 1
 #define NVM_NUM_LINK_KEYS 1

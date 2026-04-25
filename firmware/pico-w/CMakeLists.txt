@@ -23,6 +23,16 @@ set(SOURCES
     src/identity.c
     src/utils.c
     src/ble.c
+    src/diskio.c
+    src/filestore.c
+    src/cborencode.c
+    src/cbor_decode.c
+    src/commands.c
+
+    # FatFS (local copy with custom ffconf.h).
+    src/fatfs/ff.c
+    src/fatfs/ffsystem.c
+    src/fatfs/ffunicode.c
 )
 
 # Create the executable
@@ -40,6 +50,7 @@ target_link_libraries(${PROJECT_NAME}
 
 # Add include directories
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/fatfs)
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${PICO_SDK_PATH}/lib/btstack/src)
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${PICO_SDK_PATH}/lib/btstack/platform/embedded)
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_arch/include)

@@ -63,6 +63,20 @@ enum WaxwingPalettes {
     }
 }
 
+// MARK: - Prepared Source
+//
+// A photo, reduced to its grayscale 128×128 buffer. Produced once per
+// photo pick and held in @State; slider/palette changes operate on this
+// 64-KiB buffer instead of the 30–50 MiB full-res original. This is what
+// lets the contrast/brightness sliders be smooth without OOMing.
+
+struct PreparedSource: Sendable {
+    /// Grayscale luminance, row-major, values in [0, 1]. Length is
+    /// `size * size`.
+    let grayscale: [Float]
+    let size: Int
+}
+
 // MARK: - Processor
 
 enum WaxwingImageProcessor {
@@ -78,38 +92,26 @@ enum WaxwingImageProcessor {
         [15, 7,13, 5]
     ]
 
-    // MARK: Public
+    // MARK: - Prepare (expensive, runs once per photo)
 
-    /// Process a UIImage into a 128x128 Waxwing micro-image.
-    /// Returns the processed UIImage (RGB, suitable for preview) and the PNG data.
-    ///
-    /// - Parameters:
-    ///   - source: The original photo.
-    ///   - palette: Which color palette to apply.
-    ///   - contrast: Contrast multiplier (default 1.15).
-    ///   - brightness: Brightness offset (default 0).
-    /// - Returns: Tuple of `(previewImage, pngData)`, or nil on failure.
-    static func process(
-        source: UIImage,
-        palette: WaxwingPalette,
-        contrast: Float = 1.15,
-        brightness: Float = 0.0
-    ) -> (image: UIImage, pngData: Data)? {
+    /// Reduce a full-resolution UIImage down to a 128×128 grayscale buffer
+    /// with EXIF orientation and center-crop already baked in. This is
+    /// the ONLY step that touches the full-resolution pixel buffer;
+    /// subsequent slider/rotation/palette changes work from the returned
+    /// `PreparedSource`.
+    static func prepare(source: UIImage) -> PreparedSource? {
         let sz = outputSize
-
-        // 1. Center-crop and resize to 128x128
-        guard let resized = centerCropAndResize(source, to: sz) else { return nil }
-
-        // 2. Extract pixel data
+        guard let resized = centerCropAndResize(source, to: sz) else {
+            return nil
+        }
         guard let cgImage = resized.cgImage else { return nil }
         let width = cgImage.width
         let height = cgImage.height
         let pixelCount = width * height
+        guard let pixelData = extractRGBA(from: cgImage, width: width, height: height) else {
+            return nil
+        }
 
-        // Get raw RGBA bytes
-        guard let pixelData = extractRGBA(from: cgImage, width: width, height: height) else { return nil }
-
-        // 3. Convert to grayscale (0.0 – 1.0)
         var gray = [Float](repeating: 0, count: pixelCount)
         for i in 0..<pixelCount {
             let r = Float(pixelData[i * 4]) / 255.0
@@ -117,25 +119,48 @@ enum WaxwingImageProcessor {
             let b = Float(pixelData[i * 4 + 2]) / 255.0
             gray[i] = 0.299 * r + 0.587 * g + 0.114 * b
         }
+        return PreparedSource(grayscale: gray, size: sz)
+    }
 
-        // 4. Apply contrast + brightness
-        for i in 0..<pixelCount {
-            gray[i] = max(0, min(1, (gray[i] - 0.5) * contrast + 0.5 + brightness))
-        }
+    // MARK: - Render (cheap, runs per slider tick)
 
-        // 5. Bayer 4x4 ordered dithering → 4-level indices
-        var indices = [UInt8](repeating: 0, count: pixelCount)
+    /// Apply contrast/brightness, rotation, dither, and palette to a
+    /// `PreparedSource`. Working set is ~256 KB regardless of the
+    /// original photo size — this is what makes the sliders cheap.
+    static func render(
+        prepared: PreparedSource,
+        palette: WaxwingPalette,
+        rotationSteps: Int = 0,
+        contrast: Float = 1.15,
+        brightness: Float = 0.0
+    ) -> (image: UIImage, pngData: Data)? {
+        let size = prepared.size
+        let pixelCount = size * size
         let levels: Float = 3.0  // 0,1,2,3
-        for y in 0..<height {
-            for x in 0..<width {
-                let i = y * width + x
+        let steps = ((rotationSteps % 4) + 4) % 4
+
+        // Apply contrast + brightness, then ordered dithering, in one pass.
+        // Rotation is folded in by remapping (x, y) → source coordinates;
+        // the prepared buffer is never copied.
+        var indices = [UInt8](repeating: 0, count: pixelCount)
+        for y in 0..<size {
+            for x in 0..<size {
+                let (sx, sy): (Int, Int)
+                switch steps {
+                case 1: sx = y;          sy = size - 1 - x
+                case 2: sx = size - 1 - x; sy = size - 1 - y
+                case 3: sx = size - 1 - y; sy = x
+                default: sx = x;         sy = y
+                }
+                let si = sy * size + sx
+                let v = max(0, min(1, (prepared.grayscale[si] - 0.5) * contrast + 0.5 + brightness))
                 let threshold = (Float(bayer4x4[y % 4][x % 4]) + 0.5) / 16.0
-                let dithered = gray[i] * levels + (threshold - 0.5)
-                indices[i] = UInt8(max(0, min(3, Int(round(dithered)))))
+                let dithered = v * levels + (threshold - 0.5)
+                indices[y * size + x] = UInt8(max(0, min(3, Int(round(dithered)))))
             }
         }
 
-        // 6. Map indices to palette RGBA
+        // Map indices → palette RGBA.
         let paletteColors = palette.colors
         var outputPixels = [UInt8](repeating: 0, count: pixelCount * 4)
         for i in 0..<pixelCount {
@@ -146,16 +171,26 @@ enum WaxwingImageProcessor {
             outputPixels[i * 4 + 3] = 255
         }
 
-        // 7. Build UIImage for preview (premultipliedLast — safe for UIKit/SwiftUI)
-        guard let outputImage = imageFromRGBA(outputPixels, width: width, height: height) else { return nil }
-
-        // 8. Encode as standard RGBA PNG for preview / size estimation.
-        //    Alpha stripping is deferred to upload time via
-        //    `stripAlphaForUpload(_:)` to avoid allocating an extra
-        //    CGContext on every slider adjustment.
-        guard let pngData = outputImage.pngData() else { return nil }
-
+        guard let outputImage = imageFromRGBA(outputPixels, width: size, height: size),
+              let pngData = outputImage.pngData() else {
+            return nil
+        }
         return (outputImage, pngData)
+    }
+
+    // MARK: - One-shot convenience (caller doesn't want to manage PreparedSource)
+
+    /// Equivalent to `prepare` followed by `render`. Allocates the
+    /// PreparedSource, uses it once, then discards it.
+    static func process(
+        source: UIImage,
+        palette: WaxwingPalette,
+        contrast: Float = 1.15,
+        brightness: Float = 0.0
+    ) -> (image: UIImage, pngData: Data)? {
+        guard let prepared = prepare(source: source) else { return nil }
+        return render(prepared: prepared, palette: palette,
+                      contrast: contrast, brightness: brightness)
     }
 
     // MARK: - Upload encoding
@@ -181,49 +216,39 @@ enum WaxwingImageProcessor {
 
     // MARK: - Internal helpers
 
-    /// Normalize a UIImage so its `imageOrientation` is `.up` and
-    /// the raw pixel buffer matches the visual display.
-    ///
-    /// Camera photos typically have orientation metadata (e.g. `.right`
-    /// for portrait shots). CGImage ignores this, so all downstream
-    /// pixel work would see the raw (rotated) buffer.  Drawing through
-    /// UIGraphicsImageRenderer bakes the transform into the pixels.
-    private static func normalizeOrientation(_ image: UIImage) -> UIImage {
-        guard image.imageOrientation != .up else { return image }
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = image.scale
-        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
-        return renderer.image { _ in
-            image.draw(at: .zero)
-        }
-    }
-
-    /// Center-crop the source image to a square and resize to `size x size`.
-    ///
-    /// The input is first orientation-normalized so that `cgImage` pixel
-    /// dimensions match the visual layout regardless of EXIF metadata.
+    /// Center-crop the source image to a square and resize to `size x
+    /// size`, baking in EXIF orientation. Drawing directly into the
+    /// 128×128 destination through one `UIGraphicsImageRenderer` avoids
+    /// any intermediate full-resolution allocation. EXIF orientation is
+    /// applied via `UIImage.draw(in:)`, which honours `imageOrientation`
+    /// automatically — no separate "normalize" pass is needed, which
+    /// also avoids the full-size renderer that used to drive the OOM.
     private static func centerCropAndResize(_ image: UIImage, to size: Int) -> UIImage? {
-        let normalized = normalizeOrientation(image)
-        guard let cg = normalized.cgImage else { return nil }
-        let w = cg.width
-        let h = cg.height
-        let side = min(w, h)
-        let cropRect = CGRect(
-            x: (w - side) / 2,
-            y: (h - side) / 2,
-            width: side,
-            height: side
-        )
-        guard let cropped = cg.cropping(to: cropRect) else { return nil }
+        // Compute the largest centered square in the image's *visual*
+        // (orientation-adjusted) coordinate space.
+        let visualSize = image.size      // already accounts for orientation
+        let side = min(visualSize.width, visualSize.height)
+        let dx = (visualSize.width - side) / 2
+        let dy = (visualSize.height - side) / 2
 
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1.0
+        format.opaque = true
         let renderer = UIGraphicsImageRenderer(
             size: CGSize(width: size, height: size),
             format: format
         )
-        return renderer.image { ctx in
-            UIImage(cgImage: cropped).draw(in: CGRect(x: 0, y: 0, width: size, height: size))
+        return renderer.image { _ in
+            // Draw the image into a 128×128 canvas with the source square
+            // mapped over the full output. UIImage.draw applies EXIF
+            // orientation, so the bytes we read back are upright.
+            let target = CGRect(
+                x: -dx * (CGFloat(size) / side),
+                y: -dy * (CGFloat(size) / side),
+                width: visualSize.width * (CGFloat(size) / side),
+                height: visualSize.height * (CGFloat(size) / side)
+            )
+            image.draw(in: target)
         }
     }
 
