@@ -15,7 +15,7 @@ echo "=== Creating Xcode Project for WaxwingCompanion ==="
 echo ""
 
 # Create the project using xcodebuild -create (Xcode 15+)
-if xcodebuild -version | grep -q "Xcode 1[5-9]\."; then
+if xcodebuild -version | grep -qE "Xcode [12][0-9]"; then
     echo "Creating Xcode project with built-in templates..."
     
     # Use xcodebuild to create a basic project structure

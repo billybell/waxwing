@@ -39,6 +39,8 @@ static uint8_t resp_buf[512];
 static void on_file_command(const uint8_t *data, size_t len) {
     int resp_len = commands_handle(data, len, resp_buf, sizeof(resp_buf));
     if (resp_len > 0 && ble_is_connected()) {
+        printf("[main] send_file_response: %d bytes, ble_mtu=%u\r\n",
+               resp_len, (unsigned)ble_get_mtu());
         ble_send_file_response(resp_buf, (size_t)resp_len);
     }
 }

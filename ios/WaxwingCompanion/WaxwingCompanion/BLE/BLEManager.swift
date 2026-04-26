@@ -19,7 +19,19 @@ class BLEManager: NSObject, ObservableObject {
 
     /// File operation results
     @Published var fileList: [NodeFile] = []
-    @Published var fileContent: String?
+    @Published var fileContentData: Data?
+    @Published var fileContentType: FileContentType = .text
+
+    /// Backward-compat string view of the current file content. Text files only.
+    var fileContent: String? {
+        guard fileContentType == .text, let raw = self.fileContentData else { return nil }
+        return String(decoding: raw, as: UTF8.self)
+    }
+
+enum FileContentType {
+    case text
+    case binary
+}
     @Published var fileOperationError: String?
     @Published var isFileOperationInProgress = false
 
@@ -254,10 +266,13 @@ class BLEManager: NSObject, ObservableObject {
                 defer { self.finishOperation() }
                 if let error = response["error"]?.stringValue {
                     self.fileOperationError = error
-                    self.fileContent = nil
+                    self.fileContentData = nil
+                    self.fileContentType = .text
                     return
                 }
-                self.fileContent = response["data"]?.stringValue
+                let data = response["data"]?.dataValue
+                self.fileContentData = data
+                self.fileContentType = data != nil ? .binary : .text
             }
         }
     }

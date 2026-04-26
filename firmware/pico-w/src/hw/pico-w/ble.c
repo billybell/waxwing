@@ -568,6 +568,13 @@ bool ble_send_file_response(const uint8_t *data, size_t len) {
      }
     if (len > BLE_MAX_DATA_SIZE) len = BLE_MAX_DATA_SIZE;
 
+    /* Warn only when payload actually exceeds the ATT MTU limit. */
+    uint16_t mtu = ble_get_mtu();
+    if (len > mtu - 3) {
+        printf("[ble] ERROR: %zu-byte response exceeds ATT cap %u! "
+               "Data will be truncated.\r\n", len, mtu - 3);
+    }
+
     memcpy(g_file_resp_buf, data, len);
     g_file_resp_len = len;
 
