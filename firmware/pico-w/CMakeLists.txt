@@ -25,8 +25,8 @@ set(SOURCES
     src/ble.c
     src/diskio.c
     src/filestore.c
-    src/cborencode.c
-    src/cbor_decode.c
+    src/core/cborencode.c
+    src/core/cbor_decode.c
     src/commands.c
 
     # FatFS (local copy with custom ffconf.h).

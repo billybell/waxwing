@@ -7,8 +7,8 @@
 
 #include "commands.h"
 #include "filestore.h"
-#include "cborencode.h"
-#include "cbor_decode.h"
+#include "core/cborencode.h"
+#include "core/cbor_decode.h"
 #include "ble.h"
 
 #include <string.h>

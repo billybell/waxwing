@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "constants.h"
+#include "core/constants.h"
 
 // Identity record size: 32 bytes private key + 32 bytes public key
 #define IDENTITY_RECORD_SIZE 64
