@@ -9,10 +9,14 @@
 #include "core/filestore.h"
 #include "core/cborencode.h"
 #include "core/cbor_decode.h"
-#include "hw/pico-w/ble.h"
 
 #include <string.h>
 #include <stdio.h>
+
+// Provided by the active hw port (hw/pico-w/ble.c) or by tests/stub_ble.c.
+// Keeping it as a forward declaration here lets core/ stay free of any
+// hw/* include path.
+uint16_t ble_get_mtu(void);
 
 // Worst-case CBOR envelope around a `data` payload in a response map:
 //   map(2) + "ok"+true + "data" + bstr_hdr(2) ≈ 14 bytes. Round up.

@@ -1,6 +1,14 @@
 # Build directories
 build/
+build-host/
 */build/
+
+# Host test binaries
+tests/test_runner
+tests/waxwing_test
+
+# Editor backups
+*.bak
 
 # Object files
 *.o
