@@ -99,10 +99,32 @@ bool cbor_parse(const uint8_t *buf, const uint8_t *end, cbor_item_t *out) {
     }
 
     case CBOR_TYPE_BOOL:
-        // We only handle the simple values: false (0xF4), true (0xF5), null (0xF6).
-        if (additional == 20) { out->type = CBOR_TYPE_BOOL; out->arg = 0; out->next = p; return true; }
-        if (additional == 21) { out->type = CBOR_TYPE_BOOL; out->arg = 1; out->next = p; return true; }
-        if (additional == 22) { out->type = CBOR_TYPE_BOOL; out->arg = 0; out->next = p; return true; }
+        // Major type 7 covers simple values AND floats. We don't need to
+        // interpret the float bits — the meta sidecar is opaque CBOR
+        // that round-trips through the firmware verbatim. We just need
+        // to advance `next` past the payload so the parent map's walker
+        // can find the end of the value. iOS sends lat/lon as double
+        // (AI=27); without this branch, write_meta with location data
+        // failed top-level parse and silently lost the sidecar.
+        if (additional == 20) { out->type = CBOR_TYPE_BOOL;  out->arg = 0; out->next = p; return true; }
+        if (additional == 21) { out->type = CBOR_TYPE_BOOL;  out->arg = 1; out->next = p; return true; }
+        if (additional == 22) { out->type = CBOR_TYPE_BOOL;  out->arg = 0; out->next = p; return true; }
+        if (additional == 24) { // simple value (1-byte payload)
+            if (p + 1 > end) return false;
+            out->type = CBOR_TYPE_BOOL;  out->arg = p[0]; out->next = p + 1; return true;
+        }
+        if (additional == 25) { // IEEE 754 binary16
+            if (p + 2 > end) return false;
+            out->type = CBOR_TYPE_FLOAT; out->arg = 25; out->data = p; out->next = p + 2; return true;
+        }
+        if (additional == 26) { // IEEE 754 binary32
+            if (p + 4 > end) return false;
+            out->type = CBOR_TYPE_FLOAT; out->arg = 26; out->data = p; out->next = p + 4; return true;
+        }
+        if (additional == 27) { // IEEE 754 binary64
+            if (p + 8 > end) return false;
+            out->type = CBOR_TYPE_FLOAT; out->arg = 27; out->data = p; out->next = p + 8; return true;
+        }
         return false;
 
     default:

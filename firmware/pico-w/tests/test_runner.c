@@ -21,6 +21,8 @@ extern void test_write_meta_read_meta(void);
 extern void test_read_meta_missing_sidecar(void);
 extern void test_storage_info_fields(void);
 extern void test_write_then_ls(void);
+extern void test_cbor_parse_floats(void);
+extern void test_write_meta_with_doubles_roundtrip(void);
 extern void test_read_chunk_past_eof(void);
 
 extern void test_identity_generate_fresh(void);
@@ -53,6 +55,8 @@ int main(void) {
     TEST_RUN(test_read_meta_missing_sidecar);
     TEST_RUN(test_storage_info_fields);
     TEST_RUN(test_write_then_ls);
+    TEST_RUN(test_cbor_parse_floats);
+    TEST_RUN(test_write_meta_with_doubles_roundtrip);
     TEST_RUN(test_read_chunk_past_eof);
 
     TEST_RUN(test_identity_generate_fresh);
@@ -66,6 +70,6 @@ int main(void) {
     TEST_RUN(test_identity_hex_encoding);
     TEST_RUN(test_identity_b64url_encoding);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 29, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 31, test_failures);
     return test_failures;
 }

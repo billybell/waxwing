@@ -730,6 +730,108 @@ void test_write_then_ls(void) {
 }
 
 // ---------------------------------------------------------------------------
+// test_cbor_parse_floats — half/single/double advance `next` correctly
+// ---------------------------------------------------------------------------
+//
+// Regression for write_meta silently failing when the meta map contained
+// CBOR doubles (lat/lon from iOS). cbor_parse used to reject AI 25/26/27
+// in major type 7, which broke parent-map traversal.
+
+void test_cbor_parse_floats(void) {
+    // IEEE 754 binary16: 0xFB80 (irrelevant value; just checking parse)
+    uint8_t half[3]   = { 0xF9, 0x12, 0x34 };
+    uint8_t single[5] = { 0xFA, 0x40, 0x49, 0x0F, 0xDB };
+    uint8_t dbl[9]    = { 0xFB, 0x40, 0x09, 0x21, 0xFB, 0x54, 0x44, 0x2D, 0x18 };
+
+    cbor_item_t item;
+    TEST_ASSERT(cbor_parse(half,   half   + sizeof(half),   &item),
+                "parse CBOR half-float");
+    TEST_ASSERT(item.next == half + sizeof(half),
+                "half-float next advances 3 bytes");
+
+    TEST_ASSERT(cbor_parse(single, single + sizeof(single), &item),
+                "parse CBOR single-float");
+    TEST_ASSERT(item.next == single + sizeof(single),
+                "single-float next advances 5 bytes");
+
+    TEST_ASSERT(cbor_parse(dbl,    dbl    + sizeof(dbl),    &item),
+                "parse CBOR double");
+    TEST_ASSERT(item.next == dbl + sizeof(dbl),
+                "double next advances 9 bytes");
+    TEST_ASSERT(item.type == CBOR_TYPE_FLOAT, "double item is CBOR_TYPE_FLOAT");
+    TEST_ASSERT(item.arg == 27, "double item carries AI=27");
+}
+
+// ---------------------------------------------------------------------------
+// test_write_meta_with_doubles_roundtrip — lat/lon-style meta survives RTT
+// ---------------------------------------------------------------------------
+//
+// End-to-end test for the actual user-visible bug: PhotoUploadView sends
+// {"ts":int, "lat":double, "lon":double, "uploader":string}. Before the
+// fix, write_meta returned "bad request" and the sidecar wasn't stored;
+// read_meta then returned an empty map and the iOS map view stayed
+// blank. This test would have caught it.
+
+void test_write_meta_with_doubles_roundtrip(void) {
+    mock_fs_clear();
+    mock_fs_add_entry("photo.jpg", (const uint8_t *)"fakejpg", 7);
+    uint8_t req[256], out[512];
+
+    // Build the meta map by hand: {"lat": 37.7749, "lon": -122.4194, "ts": 1234}
+    uint8_t meta_buf[64];
+    uint8_t *mp = meta_buf;
+    mp += cborencode_map_header(mp, 3);
+    mp += cborencode_text_str(mp, "lat", 3);
+    *mp++ = 0xFB;
+    uint64_t lat_bits = 0x4042E98B0A3D70A4ULL; // 37.7749
+    for (int i = 7; i >= 0; i--) *mp++ = (uint8_t)((lat_bits >> (i * 8)) & 0xFF);
+    mp += cborencode_text_str(mp, "lon", 3);
+    *mp++ = 0xFB;
+    uint64_t lon_bits = 0xC05E9A19999999A0ULL; // -122.41 (close enough)
+    for (int i = 7; i >= 0; i--) *mp++ = (uint8_t)((lon_bits >> (i * 8)) & 0xFF);
+    mp += cborencode_text_str(mp, "ts", 2);
+    mp += cborencode_uint(mp, 1234);
+    size_t meta_len = (size_t)(mp - meta_buf);
+
+    // write_meta: {"cmd":"write_meta","name":"photo.jpg","meta":<bytes>}
+    uint8_t *p = req;
+    p += cborencode_map_header(p, 3);
+    p += cborencode_text_str(p, "cmd", 3);
+    p += cborencode_text_str(p, "write_meta", 10);
+    p += cborencode_text_str(p, "name", 4);
+    p += cborencode_text_str(p, "photo.jpg", 9);
+    p += cborencode_text_str(p, "meta", 4);
+    memcpy(p, meta_buf, meta_len);
+    p += meta_len;
+    int n = commands_handle(req, (size_t)(p - req), out, sizeof(out));
+    TEST_ASSERT(n > 0, "write_meta with doubles returns response");
+    cbor_item_t root;
+    TEST_ASSERT(cbor_parse(out, out + n, &root), "write_meta response parses");
+    cbor_item_t err;
+    bool has_err = cbor_map_find(root.data, out + n, root.arg, "error", &err);
+    TEST_ASSERT(!has_err, "write_meta with doubles has no error (regression: was 'bad request')");
+
+    // read_meta — verify the bytes round-trip identically.
+    p = req;
+    p += cborencode_map_header(p, 2);
+    p += cborencode_text_str(p, "cmd", 3);
+    p += cborencode_text_str(p, "read_meta", 9);
+    p += cborencode_text_str(p, "name", 4);
+    p += cborencode_text_str(p, "photo.jpg", 9);
+    n = commands_handle(req, (size_t)(p - req), out, sizeof(out));
+    cbor_item_t r;
+    TEST_ASSERT(cbor_parse(out, out + n, &r), "read_meta response parses");
+    cbor_item_t meta_val;
+    bool ok = cbor_map_find(r.data, out + n, r.arg, "meta", &meta_val);
+    TEST_ASSERT(ok && meta_val.type == CBOR_TYPE_MAP,
+                "read_meta returns the persisted map");
+    size_t got_len = (size_t)(meta_val.next - meta_val.start);
+    TEST_ASSERT(ok && got_len == meta_len &&
+                memcmp(meta_val.start, meta_buf, meta_len) == 0,
+                "meta bytes (incl. lat/lon doubles) round-trip identically");
+}
+
+// ---------------------------------------------------------------------------
 // test_read_chunk_past_eof — offset >= file size returns error
 // ---------------------------------------------------------------------------
 

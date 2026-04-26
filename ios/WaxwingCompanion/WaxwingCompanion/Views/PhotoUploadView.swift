@@ -346,10 +346,20 @@ struct PhotoUploadView: View {
             },
             completion: { [metadata] success in
                 if success, let metadata {
-                    bleManager.writeFileMeta(name: trimmedName, metadata: metadata) { _ in
+                    // Surface meta-write failures: silently dropping them
+                    // is what hid the firmware CBOR-double bug — users
+                    // saw "uploaded" but the location/uploader sidecar
+                    // never persisted.
+                    bleManager.writeFileMeta(name: trimmedName, metadata: metadata) { metaOK in
                         isUploading = false
-                        onUploaded?()
-                        dismiss()
+                        if metaOK {
+                            onUploaded?()
+                            dismiss()
+                        } else {
+                            errorMessage = "Image uploaded, but saving "
+                                + "metadata failed: "
+                                + (bleManager.fileOperationError ?? "unknown error")
+                        }
                     }
                 } else if success {
                     isUploading = false

@@ -13,7 +13,8 @@ typedef enum {
     CBOR_TYPE_TSTR  = 3,
     CBOR_TYPE_ARRAY = 4,
     CBOR_TYPE_MAP   = 5,
-    CBOR_TYPE_BOOL  = 7,
+    CBOR_TYPE_BOOL  = 7,    // also covers float/simple values (major type 7).
+    CBOR_TYPE_FLOAT = 8,    // synthetic: half/single/double float (major 7, AI 25/26/27).
     CBOR_TYPE_INVALID = 0xFF,
 } cbor_type_t;
 
