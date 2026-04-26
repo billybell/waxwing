@@ -293,10 +293,16 @@ class BLEManager: NSObject, ObservableObject {
     /// data chunks — large enough to keep transfers reasonably fast,
     /// small enough that one command always fits in one ATT write
     /// (no prepared/long-write reassembly needed on the firmware).
+    ///
+    /// Query `.withoutResponse` to get the real ATT_MTU-3 ceiling. The
+    /// `.withResponse` variant returns 512 (the queued/prepared-write
+    /// max) because iOS will transparently fragment larger values via
+    /// the Long Write procedure — which is exactly what we're trying
+    /// to avoid here, since the firmware buffer is only 256 bytes.
     private func safeChunkSize() -> Int {
         let envelopeBudget = 80
         let max = connectedNode?.peripheral
-            .maximumWriteValueLength(for: .withResponse) ?? 100
+            .maximumWriteValueLength(for: .withoutResponse) ?? 100
         return Swift.max(40, max - envelopeBudget)
     }
 
