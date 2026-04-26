@@ -11,6 +11,7 @@ extern void test_read_existing_file(void);
 extern void test_read_missing_file(void);
 extern void test_write_and_read_roundtrip(void);
 extern void test_delete(void);
+extern void test_delete_missing(void);
 extern void test_unknown_command(void);
 extern void test_missing_name_field(void);
 extern void test_chunked_write_roundtrip(void);
@@ -31,6 +32,7 @@ int main(void) {
     TEST_RUN(test_read_missing_file);
     TEST_RUN(test_write_and_read_roundtrip);
     TEST_RUN(test_delete);
+    TEST_RUN(test_delete_missing);
     TEST_RUN(test_unknown_command);
     TEST_RUN(test_missing_name_field);
     TEST_RUN(test_chunked_write_roundtrip);
@@ -42,6 +44,6 @@ int main(void) {
     TEST_RUN(test_write_then_ls);
     TEST_RUN(test_read_chunk_past_eof);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 18, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 19, test_failures);
     return test_failures;
 }

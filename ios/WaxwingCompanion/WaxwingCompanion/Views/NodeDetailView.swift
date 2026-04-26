@@ -12,6 +12,10 @@ struct NodeDetailView: View {
     @State private var showingPhotoUpload = false
     @State private var showingCompose = false
     @State private var viewMode: ViewMode = .files
+    @State private var fileEditMode: EditMode = .inactive
+    @State private var fileSelection = Set<String>()
+    @State private var pendingDelete: [String] = []
+    @State private var isDeleting = false
 
     /// Process-wide cache for Waxwing images. Backed by a content-addressed
     /// on-disk store so already-downloaded images persist across reconnects
@@ -211,35 +215,118 @@ struct NodeDetailView: View {
     // MARK: - File List (Primary Content)
 
     private var fileListContent: some View {
-        List {
-            if bleManager.isFileOperationInProgress {
-                HStack {
-                    ProgressView()
-                        .padding(.trailing, 8)
-                    Text("Loading files...")
-                        .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            List(selection: $fileSelection) {
+                if bleManager.isFileOperationInProgress && bleManager.fileList.isEmpty {
+                    HStack {
+                        ProgressView()
+                            .padding(.trailing, 8)
+                        Text("Loading files...")
+                            .foregroundStyle(.secondary)
+                    }
+                } else if bleManager.fileList.isEmpty {
+                    emptyFileState
+                } else {
+                    filesSection
                 }
-            } else if bleManager.fileList.isEmpty {
-                emptyFileState
-            } else {
-                filesSection
+
+                if let error = bleManager.fileOperationError {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                            .font(.caption)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .environment(\.editMode, $fileEditMode)
+            .refreshable {
+                bleManager.listFiles()
+            }
+            .onAppear {
+                if node.connectionState == .ready {
+                    bleManager.listFiles()
+                }
             }
 
-            if let error = bleManager.fileOperationError {
-                Section {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
-                        .font(.caption)
-                }
+            if fileEditMode.isEditing {
+                fileEditBar
             }
         }
-        .listStyle(.insetGrouped)
-        .refreshable {
-            bleManager.listFiles()
+        .alert(deleteAlertTitle, isPresented: deleteAlertBinding) {
+            Button("Cancel", role: .cancel) { pendingDelete = [] }
+            Button("Delete", role: .destructive) {
+                performDelete(names: pendingDelete)
+            }
+        } message: {
+            Text(deleteAlertMessage)
         }
-        .onAppear {
-            if node.connectionState == .ready {
+    }
+
+    // Bottom action bar shown only while in edit mode.
+    private var fileEditBar: some View {
+        HStack {
+            Text(fileSelection.isEmpty
+                 ? "Select files to delete"
+                 : "\(fileSelection.count) selected")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button(role: .destructive) {
+                pendingDelete = Array(fileSelection)
+            } label: {
+                Label("Delete", systemImage: "trash")
+                    .labelStyle(.titleAndIcon)
+            }
+            .tint(.red)
+            .disabled(fileSelection.isEmpty || isDeleting)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    private var deleteAlertTitle: String {
+        pendingDelete.count == 1
+            ? "Delete \(pendingDelete[0])?"
+            : "Delete \(pendingDelete.count) files?"
+    }
+
+    private var deleteAlertMessage: String {
+        pendingDelete.count == 1
+            ? "This permanently removes the file from the node."
+            : "This permanently removes \(pendingDelete.count) files from the node."
+    }
+
+    private var deleteAlertBinding: Binding<Bool> {
+        Binding(
+            get: { !pendingDelete.isEmpty },
+            set: { if !$0 { pendingDelete = [] } }
+        )
+    }
+
+    private func performDelete(names: [String]) {
+        guard !names.isEmpty else { return }
+        isDeleting = true
+        deleteNext(remaining: names)
+    }
+
+    private func deleteNext(remaining: [String]) {
+        guard let next = remaining.first else {
+            DispatchQueue.main.async {
+                isDeleting = false
+                pendingDelete = []
+                fileSelection.removeAll()
+                fileEditMode = .inactive
                 bleManager.listFiles()
+            }
+            return
+        }
+        bleManager.deleteFile(name: next) { _ in
+            DispatchQueue.main.async {
+                deleteNext(remaining: Array(remaining.dropFirst()))
             }
         }
     }
@@ -266,24 +353,74 @@ struct NodeDetailView: View {
     private var filesSection: some View {
         Section {
             ForEach(bleManager.fileList) { file in
-                NavigationLink(destination: FileContentView(node: node, fileName: file.name)) {
-                    HStack {
-                        Image(systemName: iconForFile(file.name))
-                            .foregroundStyle(.blue)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(file.name)
-                                .font(.body)
-                            Text(file.sizeDescription)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                fileRow(for: file)
+                    .tag(file.name)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            pendingDelete = [file.name]
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        .disabled(isDeleting)
+                    }
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            pendingDelete = [file.name]
+                        } label: {
+                            Label("Delete", systemImage: "trash")
                         }
                     }
-                    .padding(.vertical, 2)
-                }
             }
         } header: {
-            Text("\(bleManager.fileList.count) file(s)")
+            HStack {
+                Text("\(bleManager.fileList.count) file(s)")
+                Spacer()
+                if !bleManager.fileList.isEmpty {
+                    Button(fileEditMode.isEditing ? "Done" : "Edit") {
+                        withAnimation {
+                            if fileEditMode.isEditing {
+                                fileEditMode = .inactive
+                                fileSelection.removeAll()
+                            } else {
+                                fileEditMode = .active
+                            }
+                        }
+                    }
+                    .font(.footnote)
+                    .textCase(nil)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fileRow(for file: NodeFile) -> some View {
+        if fileEditMode.isEditing {
+            HStack {
+                Image(systemName: iconForFile(file.name))
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(file.name).font(.body)
+                    Text(file.sizeDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 2)
+        } else {
+            NavigationLink(destination: FileContentView(node: node, fileName: file.name)) {
+                HStack {
+                    Image(systemName: iconForFile(file.name))
+                        .foregroundStyle(.blue)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(file.name).font(.body)
+                        Text(file.sizeDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
         }
     }
 

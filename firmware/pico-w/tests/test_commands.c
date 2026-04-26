@@ -202,8 +202,8 @@ void test_read_existing_file(void) {
     cbor_item_t data_val;
     bool ok = cbor_map_find(root.data, out + n,
                              (uint64_t)root.arg, "data", &data_val);
-    TEST_ASSERT(ok && data_val.type == CBOR_TYPE_TSTR, "read response has 'data' key");
-    if (!ok || data_val.type != CBOR_TYPE_TSTR) return;
+    TEST_ASSERT(ok && data_val.type == CBOR_TYPE_BSTR, "read response has 'data' key");
+    if (!ok || data_val.type != CBOR_TYPE_BSTR) return;
     TEST_ASSERT(data_val.arg == strlen(test_content),
                 "read data matches content length");
     if (data_val.arg != strlen(test_content)) return;
@@ -272,7 +272,7 @@ void test_write_and_read_roundtrip(void) {
     cbor_item_t data_val;
     ok = cbor_map_find(r.data, out + n, (uint64_t)r.arg,
                         "data", &data_val);
-    TEST_ASSERT(ok && data_val.type == CBOR_TYPE_TSTR &&
+    TEST_ASSERT(ok && data_val.type == CBOR_TYPE_BSTR &&
                 data_val.arg == strlen(content) &&
                 memcmp(data_val.data, content, data_val.arg) == 0,
                 "write+read round-trip");
@@ -314,6 +314,32 @@ void test_delete(void) {
     ok = cbor_map_find(r2.data, out + n, (uint64_t)r2.arg,
                          "error", &err_val);
     TEST_ASSERT(ok && err_val.type == CBOR_TYPE_TSTR, "read after delete returns error");
+}
+
+
+// ---------------------------------------------------------------------------
+// test_delete_missing — deleting a non-existent file returns an error
+// ---------------------------------------------------------------------------
+
+void test_delete_missing(void) {
+    mock_fs_clear();
+    uint8_t req[128], out[512];
+    uint8_t *p = req;
+    p += cborencode_map_header(p, 2);
+    p += cborencode_text_str(p, "cmd", 3);
+    p += cborencode_text_str(p, "delete", 6);
+    p += cborencode_text_str(p, "name", 4);
+    p += cborencode_text_str(p, "ghost.txt", 9);
+    int n = commands_handle(req, (size_t)(p - req), out, sizeof(out));
+    TEST_ASSERT(n > 0, "delete missing returns response");
+    cbor_item_t root;
+    TEST_ASSERT(cbor_parse(out, out + n, &root), "delete missing parses");
+    if (!cbor_parse(out, out + n, &root)) return;
+    cbor_item_t err_val;
+    bool ok = cbor_map_find(root.data, out + n, (uint64_t)root.arg,
+                            "error", &err_val);
+    TEST_ASSERT(ok && err_val.type == CBOR_TYPE_TSTR,
+                "delete missing returns error string");
 }
 
 
@@ -436,7 +462,7 @@ void test_chunked_write_roundtrip(void) {
     TEST_ASSERT(cbor_parse(out, out + n, &r), "read after chunked parses");
     cbor_item_t data_val;
     bool ok = cbor_map_find(r.data, out + n, r.arg, "data", &data_val);
-    TEST_ASSERT(ok && data_val.type == CBOR_TYPE_TSTR, "chunked read has data");
+    TEST_ASSERT(ok && data_val.type == CBOR_TYPE_BSTR, "chunked read has data");
     TEST_ASSERT(ok && data_val.arg == total &&
                 memcmp(data_val.data, payload, total) == 0,
                 "chunked round-trip bytes match");
