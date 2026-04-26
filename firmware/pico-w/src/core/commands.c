@@ -136,16 +136,25 @@ static int cmd_read(const uint8_t *body, const uint8_t *body_end, uint64_t pc,
     if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
         return emit_error(out, out_max, "missing name");
 
+         /* Default ATT MTU (23) -> max payload 20 bytes. CBOR envelope is
+          * map_header(1) + "data"(5) + byte_str_indicator(~2) ~ 8 bytes,
+          * so budget for content = 12 bytes. Read only that many -- if
+          * fs_read returns fewer, the whole file fit. If it returned the
+          * full budget, there may be more data and caller should use
+          * read_start/read_chunk. */
+    const size_t inline_budget = 12;
     uint8_t scratch[MAX_INLINE_DATA];
-    size_t cap = safe_chunk_for_response();
-    int n = fs_read(name, scratch, cap);
+    int n = fs_read(name, scratch, inline_budget);
     if (n < 0) return emit_error(out, out_max, "not found");
+    if ((size_t)n == inline_budget)
+        return emit_error(out, out_max, "file too large for inline read");
 
     uint8_t *p = out;
     p += cborencode_map_header(p, 1);
     p += cborencode_text_str(p, "data", 4);
-    p += cborencode_text_str(p, (const char *)scratch, (size_t)n);
+    p += cborencode_byte_str(p, scratch, (size_t)n);
     return (int)(p - out);
+
 }
 
 static int cmd_write(const uint8_t *body, const uint8_t *body_end, uint64_t pc,

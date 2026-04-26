@@ -1,10 +1,18 @@
 import SwiftUI
 
-/// Displays the text content of a file stored on the connected node.
+/// Displays the content of a file stored on the connected node.
 struct FileContentView: View {
     @EnvironmentObject var bleManager: BLEManager
     @ObservedObject var node: WaxwingNode
     let fileName: String
+
+    private var textDisplay: String? {
+        guard let data = bleManager.fileContent else { return nil }
+         // If bytes round-trip through UTF-8 losslessly, it's valid text.
+        let s = String(decoding: data, as: UTF8.self)
+        guard s.utf8.count == data.count else { return nil }
+        return s
+     }
 
     var body: some View {
         Group {
@@ -14,53 +22,61 @@ struct FileContentView: View {
                     Text("Reading file...")
                         .foregroundStyle(.secondary)
                 }
-            } else if let error = bleManager.fileOperationError {
+             } else if let error = bleManager.fileOperationError {
                 VStack(spacing: 16) {
                     Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 36))
-                        .foregroundStyle(.red)
+                         .font(.system(size: 36))
+                         .foregroundStyle(.red)
                     Text(error)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                         .foregroundStyle(.secondary)
+                         .multilineTextAlignment(.center)
 
                     Button("Retry") {
                         bleManager.readFile(name: fileName)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding()
-            } else if let content = bleManager.fileContent {
+                     }
+                     .buttonStyle(.borderedProminent)
+                 }
+                 .padding()
+             } else if let content = textDisplay {
                 ScrollView {
                     Text(content)
-                        .font(.body.monospaced())
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .textSelection(.enabled)
-                }
-            } else {
+                         .font(.body.monospaced())
+                         .frame(maxWidth: .infinity, alignment: .leading)
+                         .padding()
+                         .textSelection(.enabled)
+                 }
+             } else if bleManager.fileContent != nil {
+                VStack(spacing: 16) {
+                    Image(systemName: "doc.fill")
+                         .font(.system(size: 36))
+                         .foregroundStyle(.secondary)
+                    Text("Binary file — \(fileName)")
+                         .foregroundStyle(.tertiary)
+                 }
+             } else {
                 Text("No content")
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .navigationTitle(fileName)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
+                     .foregroundStyle(.tertiary)
+              }
+           }
+           .navigationTitle(fileName)
+           .navigationBarTitleDisplayMode(.inline)
+           .toolbar {
             ToolbarItem(placement: .automatic) {
                 Button {
                     bleManager.readFile(name: fileName)
-                } label: {
+                 } label: {
                     Image(systemName: "arrow.clockwise")
-                }
-                .disabled(bleManager.isFileOperationInProgress)
-            }
-        }
-        .onAppear {
-            // Clear previous content and load this file
+                  }
+                  .disabled(bleManager.isFileOperationInProgress)
+             }
+           }
+           .onAppear {
+             // Clear previous content and load this file
             bleManager.fileContent = nil
             bleManager.fileOperationError = nil
             if node.connectionState == .ready {
                 bleManager.readFile(name: fileName)
-            }
-        }
-    }
+              }
+          }
+     }
 }
