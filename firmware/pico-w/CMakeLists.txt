@@ -19,14 +19,15 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
     # Set the source files
     set(SOURCES
         src/hw/pico-w/main.c
-        src/hw/pico-w/identity.c
         src/hw/pico-w/utils.c
         src/hw/pico-w/ble.c
         src/hw/pico-w/diskio.c
         src/hw/pico-w/filestore_fatfs.c
+        src/hw/pico-w/hal_crypto_pico.c
         src/core/cborencode.c
         src/core/cbor_decode.c
         src/core/commands.c
+        src/core/identity.c
 
          # FatFS (local copy with custom ffconf.h).
         src/thirdparty/fatfs/ff.c
@@ -99,10 +100,13 @@ if(NOT CMAKE_CROSSCOMPILING)
         src/core/cborencode.c
         src/core/cbor_decode.c
         src/core/commands.c
+        src/core/identity.c
         tests/test_runner.c
         tests/test_commands.c
+        tests/test_identity.c
         tests/mock_filestore.c
         tests/stub_ble.c
+        tests/stub_hal_crypto.c
      )
 
     add_executable(waxwing_test ${TEST_SOURCES})

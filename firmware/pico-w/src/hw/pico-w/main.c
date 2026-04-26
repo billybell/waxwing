@@ -3,7 +3,7 @@
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include "hardware/gpio.h"
-#include "identity.h"
+#include "core/identity.h"
 #include "core/constants.h"
 #include "hw/pico-w/ble.h"
 #include "core/filestore.h"

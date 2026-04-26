@@ -23,6 +23,17 @@ extern void test_storage_info_fields(void);
 extern void test_write_then_ls(void);
 extern void test_read_chunk_past_eof(void);
 
+extern void test_identity_generate_fresh(void);
+extern void test_identity_persists_across_load(void);
+extern void test_identity_load_existing(void);
+extern void test_identity_corrupted_pub_regenerates(void);
+extern void test_identity_wrong_magic_regenerates(void);
+extern void test_identity_wrong_version_regenerates(void);
+extern void test_identity_short_blob_regenerates(void);
+extern void test_identity_node_name_format(void);
+extern void test_identity_hex_encoding(void);
+extern void test_identity_b64url_encoding(void);
+
 int main(void) {
     TEST_RUN(test_ls_empty);
     TEST_RUN(test_ls_with_files);
@@ -44,6 +55,17 @@ int main(void) {
     TEST_RUN(test_write_then_ls);
     TEST_RUN(test_read_chunk_past_eof);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 19, test_failures);
+    TEST_RUN(test_identity_generate_fresh);
+    TEST_RUN(test_identity_persists_across_load);
+    TEST_RUN(test_identity_load_existing);
+    TEST_RUN(test_identity_corrupted_pub_regenerates);
+    TEST_RUN(test_identity_wrong_magic_regenerates);
+    TEST_RUN(test_identity_wrong_version_regenerates);
+    TEST_RUN(test_identity_short_blob_regenerates);
+    TEST_RUN(test_identity_node_name_format);
+    TEST_RUN(test_identity_hex_encoding);
+    TEST_RUN(test_identity_b64url_encoding);
+
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 29, test_failures);
     return test_failures;
 }

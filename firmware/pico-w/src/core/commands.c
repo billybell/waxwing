@@ -141,18 +141,11 @@ static int cmd_read(const uint8_t *body, const uint8_t *body_end, uint64_t pc,
     int n = fs_read(name, scratch, cap);
     if (n < 0) return emit_error(out, out_max, "not found");
 
-     /* LOG: debug inline read sizing for MTU overflow investigation. */
-    printf("[cmd] read: name=%s file_sz=%d safe_chunk=%zu ble_mtu=%u\r\n",
-           name, n, cap, (unsigned)ble_get_mtu());
-
     uint8_t *p = out;
     p += cborencode_map_header(p, 1);
     p += cborencode_text_str(p, "data", 4);
     p += cborencode_byte_str(p, scratch, (size_t)n);
-    int resp_len = (int)(p - out);
-    printf("[cmd] read: response %d bytes (max %zu), cap=%zu ble_mtu=%u\r\n",
-           resp_len, out_max, cap, (unsigned)ble_get_mtu());
-    return resp_len;
+    return (int)(p - out);
 }
 
 static int cmd_write(const uint8_t *body, const uint8_t *body_end, uint64_t pc,
