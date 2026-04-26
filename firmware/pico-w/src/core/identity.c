@@ -125,8 +125,13 @@ static bool generate_fresh(waxwing_identity_t *identity) {
     serialize_blob(identity, blob);
     if (!save_blob(blob)) {
         // Persistence failure isn't fatal for the running session — the
-        // node will work until reboot — but log loudly so we notice.
-        printf("[identity] save_blob failed; identity is RAM-only this boot\r\n");
+        // node will work until reboot — but it means the next reboot
+        // generates a *different* identity (and a different node_name),
+        // which is almost always a setup bug (e.g. fs_init not called
+        // first). Log loudly so we notice in serial output.
+        printf("[identity] WARN: save_blob failed — identity will not "
+               "survive reboot. Check fs_init() ran before "
+               "waxwing_identity_load_or_generate().\r\n");
     }
     populate_derived_fields(identity);
     printf("[identity] Generated new Transport Identity\r\n");

@@ -210,12 +210,6 @@ static void build_identity_from_struct(const waxwing_device_identity_t *id) {
     pos += cbor_encode_uint(&waxwing_identity_data[pos], 1);
 
     waxwing_identity_len = pos;
-
-    printf("[ble] identity CBOR blob: %zu bytes, first 16:", pos);
-    for (size_t i = 0; i < pos && i < 16; i++) {
-        printf(" %02x", waxwing_identity_data[i]);
-    }
-    printf("\r\n");
 }
 
 // ============================================================

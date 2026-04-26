@@ -53,6 +53,16 @@ int main(void) {
     printf("WAXWING C-FIRMWARE v2.1 DEBUG BUILD\r\n");
     printf("\r\n");
 
+    // fs_init must run BEFORE identity load — identity persists itself
+    // through fs_write/fs_read, which silently fail if the volume isn't
+    // mounted yet. Reversing this order is what caused identity to
+    // regenerate (and node_name to change) on every boot.
+    if (fs_init() < 0) {
+        printf("[main] FATAL: fs_init failed\r\n");
+        while (1) { __asm__("nop"); }
+    }
+    printf("[main] Filesystem ready\r\n");
+
     waxwing_identity_t identity;
     if (!waxwing_identity_load_or_generate(&identity)) {
         printf("[main] FATAL: identity init failed\r\n");
@@ -62,12 +72,6 @@ int main(void) {
     printf("[main] Node name: %s\r\n", identity.node_name);
     printf("[main] Public key: %s...\r\n", identity.tpk_hex);
     printf("\r\n");
-
-    if (fs_init() < 0) {
-        printf("[main] FATAL: fs_init failed\r\n");
-        while (1) { __asm__("nop"); }
-    }
-    printf("[main] Filesystem ready\r\n");
 
     if (!ble_init()) {
         printf("[main] FATAL: BLE init failed\r\n");

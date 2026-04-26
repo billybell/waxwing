@@ -33,6 +33,12 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
         src/thirdparty/fatfs/ff.c
         src/thirdparty/fatfs/ffsystem.c
         src/thirdparty/fatfs/ffunicode.c
+
+         # Monocypher: standard Ed25519 (RFC 8032, curve25519 + SHA-512)
+         # used by hal_crypto_pico.c. monocypher-ed25519.c re-uses
+         # primitives from monocypher.c — both files required.
+        src/thirdparty/monocypher/monocypher.c
+        src/thirdparty/monocypher/monocypher-ed25519.c
      )
 
     # Create the executable
