@@ -19,7 +19,7 @@ class BLEManager: NSObject, ObservableObject {
 
     /// File operation results
     @Published var fileList: [NodeFile] = []
-    @Published var fileContent: Data?
+    @Published var fileContent: String?
     @Published var fileOperationError: String?
     @Published var isFileOperationInProgress = false
 
@@ -247,15 +247,20 @@ class BLEManager: NSObject, ObservableObject {
 
     /// Read a text file from the connected node.
     func readFile(name: String) {
-         // Use chunked reads — the inline cmd_read path can produce responses
-        // that exceed BLE transport limits on connections with large MTUs.
         enqueueOperation { [weak self] in
             guard let self else { return }
-            self.readFileChunked(name: name)
-          }
-       }
-
-
+            self.sendFileCommand(["cmd": "read", "name": name]) { [weak self] response in
+                guard let self else { return }
+                defer { self.finishOperation() }
+                if let error = response["error"]?.stringValue {
+                    self.fileOperationError = error
+                    self.fileContent = nil
+                    return
+                }
+                self.fileContent = response["data"]?.stringValue
+            }
+        }
+    }
 
     /// Write a text file to the connected node.
     func writeFile(name: String, content: String, completion: ((Bool) -> Void)? = nil) {
@@ -455,7 +460,7 @@ class BLEManager: NSObject, ObservableObject {
                 guard response["ok"]?.boolValue == true,
                       let totalSize = response["size"]?.uintValue else {
                     // Fallback: maybe the node returned data directly
-                    self.fileContent = response["data"]?.dataValue
+                    if let data = response["data"]?.dataValue {
                         completion(data)
                     } else {
                         self.fileOperationError = "read_start failed"
@@ -498,8 +503,6 @@ class BLEManager: NSObject, ObservableObject {
     ) {
         if offset >= totalSize {
             progress?(1.0)
-            // Track data so readFile can see it
-            self.fileContent = accumulated
             completion(accumulated)
             finishOperation()
             return
