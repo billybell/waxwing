@@ -19,11 +19,11 @@ pico_sdk_init()
 
 # Set the source files
 set(SOURCES
-    src/main.c
-    src/identity.c
-    src/utils.c
+    src/hw/pico-w/main.c
+    src/hw/pico-w/identity.c
+    src/hw/pico-w/utils.c
     src/hw/pico-w/ble.c
-    src/diskio.c
+    src/hw/pico-w/diskio.c
     src/hw/pico-w/filestore_fatfs.c
     src/core/cborencode.c
     src/core/cbor_decode.c
