@@ -6,7 +6,7 @@
 // names here must match exactly.
 
 #include "commands.h"
-#include "filestore.h"
+#include "core/filestore.h"
 #include "core/cborencode.h"
 #include "core/cbor_decode.h"
 #include "ble.h"

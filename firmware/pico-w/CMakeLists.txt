@@ -24,7 +24,7 @@ set(SOURCES
     src/utils.c
     src/ble.c
     src/diskio.c
-    src/filestore.c
+    src/hw/pico-w/filestore_fatfs.c
     src/core/cborencode.c
     src/core/cbor_decode.c
     src/commands.c

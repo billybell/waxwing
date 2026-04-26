@@ -6,7 +6,7 @@
 #include "identity.h"
 #include "core/constants.h"
 #include "ble.h"
-#include "filestore.h"
+#include "core/filestore.h"
 #include "commands.h"
 
 // LED blink interval (ms)
