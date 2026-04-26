@@ -5,9 +5,9 @@
 #include "hardware/gpio.h"
 #include "identity.h"
 #include "core/constants.h"
-#include "ble.h"
+#include "hw/pico-w/ble.h"
 #include "core/filestore.h"
-#include "commands.h"
+#include "core/commands.h"
 
 // LED blink interval (ms)
 #define LED_BLINK_CONNECTED    100

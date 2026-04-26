@@ -6,7 +6,7 @@
     * File Response (READ + NOTIFY).
     */
 
-#include "ble.h"
+#include "hw/pico-w/ble.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>

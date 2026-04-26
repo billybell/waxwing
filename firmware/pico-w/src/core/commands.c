@@ -5,11 +5,11 @@
 // pinned by the iOS companion app (see ios/.../BLEManager.swift); field
 // names here must match exactly.
 
-#include "commands.h"
+#include "core/commands.h"
 #include "core/filestore.h"
 #include "core/cborencode.h"
 #include "core/cbor_decode.h"
-#include "ble.h"
+#include "hw/pico-w/ble.h"
 
 #include <string.h>
 #include <stdio.h>
