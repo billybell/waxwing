@@ -70,6 +70,27 @@ static int emit_ok(uint8_t *out, size_t out_max) {
 // response into `out` and return the response length, or call emit_error.
 // ---------------------------------------------------------------------------
 
+// Number of bytes a CBOR header takes for an arg of value `v` (RFC 8949 §3).
+static size_t cbor_arg_size(uint32_t v) {
+    if (v <= 23)     return 1;
+    if (v <= 0xFF)   return 2;
+    if (v <= 0xFFFF) return 3;
+    return 5;
+}
+
+// Encoded size of one ls entry: map(3) of "name"+"size"+"hash". Must stay
+// in sync with the writes in cmd_ls below — if you change one, change both.
+static size_t ls_entry_size(const char *name, uint32_t size) {
+    size_t name_len = strlen(name);
+    return 1                                          // map(3) header
+         + 1 + 4                                      // "name" key (text len 4)
+         + cbor_arg_size((uint32_t)name_len) + name_len
+         + 1 + 4                                      // "size" key
+         + cbor_arg_size(size)                        // size uint
+         + 1 + 4                                      // "hash" key
+         + 1 + 8;                                     // bstr(8) hash
+}
+
 static int cmd_ls(const uint8_t *body, const uint8_t *body_end, uint64_t pc,
                   uint8_t *out, size_t out_max) {
     enum { PAGE = 16 };
@@ -81,17 +102,44 @@ static int cmd_ls(const uint8_t *body, const uint8_t *body_end, uint64_t pc,
     char names[PAGE][FS_MAX_NAME_LEN];
     uint32_t sizes[PAGE];
     uint8_t hashes[PAGE][8];
-    int next_offset = 0;
-    int count = fs_list(names, sizes, hashes, PAGE, offset, PAGE, &next_offset);
-    if (count < 0) return emit_error(out, out_max, "list failed");
+    int fs_next = 0;
+    int avail = fs_list(names, sizes, hashes, PAGE, offset, PAGE, &fs_next);
+    if (avail < 0) return emit_error(out, out_max, "list failed");
+
+    // Per-response byte budget. The notification has to fit in a single ATT
+    // packet (mtu - 3) and within out_max. Reserve enough for the outer
+    // envelope ("files" key + array header) and a possible "next_offset"
+    // trailer. Worst-case envelope ≈ 9 bytes, trailer ≈ 18 bytes — round up.
+    size_t mtu = (size_t)ble_get_mtu();
+    size_t budget = (mtu > 3) ? (mtu - 3) : 20;
+    if (budget > out_max) budget = out_max;
+    const size_t ENVELOPE_RESERVE = 9;
+    const size_t TRAILER_RESERVE  = 18;
+    size_t entry_budget = (budget > ENVELOPE_RESERVE + TRAILER_RESERVE)
+                          ? budget - ENVELOPE_RESERVE - TRAILER_RESERVE
+                          : 0;
+
+    int cnt = 0;
+    size_t used = 0;
+    for (int i = 0; i < avail; i++) {
+        size_t esz = ls_entry_size(names[i], sizes[i]);
+        if (used + esz > entry_budget) break;
+        used += esz;
+        cnt++;
+    }
+
+    // If we couldn't ship every entry fs_list handed us, the next page must
+    // resume just past the last entry we encoded — overriding fs_next, which
+    // only knows about *files* beyond the staged page.
+    int next_offset = (cnt < avail) ? (offset + cnt) : fs_next;
 
     uint8_t *p = out;
     int n_fields = next_offset > 0 ? 2 : 1;
     p += cborencode_map_header(p, n_fields);
 
     p += cborencode_text_str(p, "files", 5);
-    p += cborencode_array_header(p, count);
-    for (int i = 0; i < count; i++) {
+    p += cborencode_array_header(p, cnt);
+    for (int i = 0; i < cnt; i++) {
         p += cborencode_map_header(p, 3);
         p += cborencode_text_str(p, "name", 4);
         p += cborencode_text_str(p, names[i], strlen(names[i]));

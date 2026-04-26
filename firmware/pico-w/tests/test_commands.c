@@ -111,44 +111,55 @@ void test_ls_with_files(void) {
 
 void test_ls_pagination(void) {
     mock_fs_clear();
-    // commands.c paginates ls in pages of 16; seed 20 to force a boundary.
-    char names[20][FS_MAX_NAME_LEN];
-    for (int i = 0; i < 20; i++) {
-        snprintf(names[i], sizeof(names[i]), "f%02d.txt", i);
+    // Seed enough realistic-length filenames to force the byte-budgeted ls
+    // response to span several pages (matches the upload+upload+upload regression
+    // we hit with iOS, where each filename was ~27 chars).
+    enum { SEEDED = 12 };
+    char names[SEEDED][FS_MAX_NAME_LEN];
+    for (int i = 0; i < SEEDED; i++) {
+        snprintf(names[i], sizeof(names[i]), "waxwing_20260426_18%04d.png", i);
         mock_fs_add_entry(names[i], (const uint8_t *)"x", 1);
     }
     uint8_t req[64], out[1024];
 
-    // First page: ls with no offset → 16 entries + next_offset=16
-    size_t rlen = build_cmd_request(req, "ls");
-    int n = commands_handle(req, rlen, out, sizeof(out));
-    TEST_ASSERT(n > 0, "ls page 1 returns response");
-    cbor_item_t root;
-    TEST_ASSERT(cbor_parse(out, out + n, &root), "ls page 1 parses");
-    cbor_item_t files_arr;
-    bool ok = cbor_map_find(root.data, out + n, root.arg, "files", &files_arr);
-    TEST_ASSERT(ok && files_arr.type == CBOR_TYPE_ARRAY && files_arr.arg == 16,
-                "ls page 1 has 16 entries");
-    uint64_t next_off = 0;
-    ok = cbor_map_get_uint(root.data, out + n, root.arg, "next_offset", &next_off);
-    TEST_ASSERT(ok && next_off == 16, "ls page 1 next_offset is 16");
+    // Walk pages via next_offset until we've drained the listing. Verify:
+    //   1. each page response fits in the BLE notification cap (MTU-3 = 244)
+    //   2. every page carries at least one entry (else we'd loop forever)
+    //   3. concatenating all pages reproduces the seeded set
+    int total_seen = 0;
+    uint64_t cur_offset = 0;
+    bool more = true;
+    int safety = 0;
+    while (more) {
+        TEST_ASSERT(safety++ < 10, "ls pagination terminates");
+        uint8_t *p = req;
+        p += cborencode_map_header(p, 2);
+        p += cborencode_text_str(p, "cmd", 3);
+        p += cborencode_text_str(p, "ls", 2);
+        p += cborencode_text_str(p, "offset", 6);
+        p += cborencode_uint(p, (uint32_t)cur_offset);
+        int n = commands_handle(req, (size_t)(p - req), out, sizeof(out));
+        TEST_ASSERT(n > 0, "ls page returns response");
+        TEST_ASSERT(n <= 244, "ls page fits in BLE notification (MTU-3)");
 
-    // Second page: ls with offset=16 → 4 remaining, no next_offset.
-    uint8_t *p = req;
-    p += cborencode_map_header(p, 2);
-    p += cborencode_text_str(p, "cmd", 3);
-    p += cborencode_text_str(p, "ls", 2);
-    p += cborencode_text_str(p, "offset", 6);
-    p += cborencode_uint(p, 16);
-    n = commands_handle(req, (size_t)(p - req), out, sizeof(out));
-    TEST_ASSERT(n > 0, "ls page 2 returns response");
-    TEST_ASSERT(cbor_parse(out, out + n, &root), "ls page 2 parses");
-    ok = cbor_map_find(root.data, out + n, root.arg, "files", &files_arr);
-    TEST_ASSERT(ok && files_arr.arg == 4, "ls page 2 has 4 entries");
-    cbor_item_t no_more;
-    bool has_next = cbor_map_find(root.data, out + n, root.arg,
-                                   "next_offset", &no_more);
-    TEST_ASSERT(!has_next, "ls page 2 omits next_offset (end of list)");
+        cbor_item_t root;
+        TEST_ASSERT(cbor_parse(out, out + n, &root), "ls page parses");
+        cbor_item_t files_arr;
+        bool ok = cbor_map_find(root.data, out + n, root.arg, "files", &files_arr);
+        TEST_ASSERT(ok && files_arr.type == CBOR_TYPE_ARRAY,
+                    "ls page has files array");
+        TEST_ASSERT(files_arr.arg >= 1, "ls page has at least one entry");
+        total_seen += (int)files_arr.arg;
+
+        uint64_t next_off = 0;
+        more = cbor_map_get_uint(root.data, out + n, root.arg,
+                                  "next_offset", &next_off);
+        if (more) {
+            TEST_ASSERT(next_off > cur_offset, "next_offset advances");
+            cur_offset = next_off;
+        }
+    }
+    TEST_ASSERT(total_seen == SEEDED, "all seeded entries returned across pages");
 }
 
 // ---------------------------------------------------------------------------
