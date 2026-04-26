@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#include "fatfs/ff.h"
+#include "thirdparty/fatfs/ff.h"
 #include "diskio.h"
 
 // ---------------------------------------------------------------------------

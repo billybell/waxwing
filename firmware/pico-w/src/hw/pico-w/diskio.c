@@ -21,8 +21,8 @@
 #include "hardware/sync.h"
 #include "pico/stdlib.h"
 
-#include "fatfs/ff.h"
-#include "fatfs/diskio.h"   // FatFS's BYTE/UINT/LBA_t typedefs and prototypes
+#include "thirdparty/fatfs/ff.h"
+#include "thirdparty/fatfs/diskio.h"   // FatFS's BYTE/UINT/LBA_t typedefs and prototypes
 #include "diskio.h"
 
 #define FLASH_PDRV 0

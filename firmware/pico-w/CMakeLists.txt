@@ -30,9 +30,9 @@ set(SOURCES
     src/core/commands.c
 
     # FatFS (local copy with custom ffconf.h).
-    src/fatfs/ff.c
-    src/fatfs/ffsystem.c
-    src/fatfs/ffunicode.c
+    src/thirdparty/fatfs/ff.c
+    src/thirdparty/fatfs/ffsystem.c
+    src/thirdparty/fatfs/ffunicode.c
 )
 
 # Create the executable
