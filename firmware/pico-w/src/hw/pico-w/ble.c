@@ -368,8 +368,13 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
 
         case HCI_EVENT_LE_META:
               // Track connection so g_connected / g_conn_handle are valid for notifies.
+              // Filter on role==SLAVE so the peripheral path here only owns
+              // *inbound* connections; outbound (Central) connections are
+              // tracked separately in ble_client.c, which filters role==MASTER.
             if (hci_event_le_meta_get_subevent_code(packet) ==
-                    HCI_SUBEVENT_LE_CONNECTION_COMPLETE) {
+                    HCI_SUBEVENT_LE_CONNECTION_COMPLETE &&
+                hci_subevent_le_connection_complete_get_role(packet) ==
+                    HCI_ROLE_SLAVE) {
                 g_conn_handle =
                     hci_subevent_le_connection_complete_get_connection_handle(packet);
                 g_connected     = true;
@@ -383,6 +388,13 @@ static void packet_handler(uint8_t packet_type, uint16_t channel,
 
         case HCI_EVENT_DISCONNECTION_COMPLETE:
             conn_handle = hci_event_disconnection_complete_get_connection_handle(packet);
+            // Only react if this is *our* (inbound) connection. Outbound
+            // disconnects are handled in ble_client.c. Without this guard
+            // we'd falsely fire the peripheral disconnect callback and
+            // re-enable advertising every time an outbound peer-sync
+            // connection ended.
+            if (conn_handle != g_conn_handle) break;
+
             g_connected = false;
             g_conn_handle = 0xFFFF;
             g_notif_enabled = false;

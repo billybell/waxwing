@@ -21,6 +21,7 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
         src/hw/pico-w/main.c
         src/hw/pico-w/utils.c
         src/hw/pico-w/ble.c
+        src/hw/pico-w/ble_client.c
         src/hw/pico-w/diskio.c
         src/hw/pico-w/filestore_fatfs.c
         src/hw/pico-w/hal_crypto_pico.c
