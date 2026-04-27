@@ -97,15 +97,14 @@ static void led_update(void) {
 static uint8_t resp_buf[512];
 
 static void on_file_command(const uint8_t *data, size_t len) {
+    printf("[main] on_file_command: %zu bytes in\r\n", len);
     int resp_len = commands_handle(data, len, resp_buf, sizeof(resp_buf));
+    printf("[main] commands_handle → %d bytes out, ble_connected=%d\r\n",
+           resp_len, (int)ble_is_connected());
     if (resp_len > 0 && ble_is_connected()) {
-        ble_send_file_response(resp_buf, (size_t)resp_len);
+        bool ok = ble_send_file_response(resp_buf, (size_t)resp_len);
+        printf("[main] ble_send_file_response → %s\r\n", ok ? "queued" : "DROPPED");
     }
-    // Any successful user-files mutation may have changed the manifest
-    // counter (commands.c bumps it). Push the latest value into the
-    // advertisement so the next scan-time decision sees it.
-    // We refresh unconditionally — the setter is a no-op if the value
-    // hasn't changed, so this is cheap.
     ble_set_manifest_version(manifest_counter_get());
 }
 
@@ -140,10 +139,12 @@ static void on_client_connected(void) {
     g_sync = peer_sync_start(g_sync_peer_tpk, g_sync_buf, sizeof(g_sync_buf),
                              &out_len, &step);
     if (!g_sync || step != PEER_SYNC_NEED_WRITE) {
-        printf("[mesh] peer_sync_start refused; disconnecting\r\n");
+        printf("[mesh] peer_sync_start refused (step=%d); disconnecting\r\n",
+               (int)step);
         ble_client_disconnect();
         return;
     }
+    printf("[mesh] peer_sync_start ok, sending %zu-byte ls\r\n", out_len);
     if (!ble_client_send_command(g_sync_buf, out_len)) {
         printf("[mesh] failed to send first command; disconnecting\r\n");
         ble_client_disconnect();
@@ -151,27 +152,31 @@ static void on_client_connected(void) {
 }
 
 static void on_client_response(const uint8_t *data, size_t len) {
-    if (!g_sync) return;
+    printf("[mesh] response in: %zu bytes\r\n", len);
+    if (!g_sync) {
+        printf("[mesh] WARN: response with no active session\r\n");
+        return;
+    }
     size_t           out_len = 0;
     peer_sync_step_t step = peer_sync_handle_response(g_sync, data, len,
                                                        g_sync_buf,
                                                        sizeof(g_sync_buf),
                                                        &out_len);
+    printf("[mesh] peer_sync step=%d, next_cmd_len=%zu\r\n",
+           (int)step, out_len);
     if (step == PEER_SYNC_NEED_WRITE) {
         if (!ble_client_send_command(g_sync_buf, out_len)) {
+            printf("[mesh] send_command failed; disconnecting\r\n");
             ble_client_disconnect();
         }
         return;
     }
-    // DONE or ERROR — record the result and disconnect. The actual
-    // disconnect callback fires later and ends the session there.
+    // DONE or ERROR — record the result and disconnect.
     peer_table_record_sync(g_sync_peer_tpk, g_sync_peer_version,
                            (step == PEER_SYNC_DONE)
                                 ? PEER_SYNC_RESULT_SUCCESS
                                 : PEER_SYNC_RESULT_FAILED,
                            now_ms());
-    // Refresh the advertised counter — peer_sync may have bumped it
-    // mid-session (each successful chunked_finish bumps once).
     ble_set_manifest_version(manifest_counter_get());
     ble_client_disconnect();
 }
