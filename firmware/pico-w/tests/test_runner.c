@@ -64,6 +64,19 @@ extern void test_mesh_companion_freezes_schedule(void);
 extern void test_mesh_grace_skipped_if_companion_connects_immediately(void);
 extern void test_mesh_jitter_breaks_lockstep(void);
 
+extern void test_peer_sync_empty_peer(void);
+extern void test_peer_sync_single_file_full_pull(void);
+extern void test_peer_sync_multi_chunk_pull(void);
+extern void test_peer_sync_pagination(void);
+extern void test_peer_sync_dedup_by_name(void);
+extern void test_peer_sync_dedup_skips_through_to_unique(void);
+extern void test_peer_sync_peer_error_mid_chunk(void);
+extern void test_peer_sync_read_start_not_found_skips(void);
+extern void test_peer_sync_meta_error_is_best_effort(void);
+extern void test_peer_sync_end_aborts_in_flight(void);
+extern void test_peer_sync_only_one_session_at_a_time(void);
+extern void test_peer_sync_envelope_fits_mtu(void);
+
 int main(void) {
     TEST_RUN(test_ls_empty);
     TEST_RUN(test_ls_with_files);
@@ -126,6 +139,19 @@ int main(void) {
     TEST_RUN(test_mesh_grace_skipped_if_companion_connects_immediately);
     TEST_RUN(test_mesh_jitter_breaks_lockstep);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 56, test_failures);
+    TEST_RUN(test_peer_sync_empty_peer);
+    TEST_RUN(test_peer_sync_single_file_full_pull);
+    TEST_RUN(test_peer_sync_multi_chunk_pull);
+    TEST_RUN(test_peer_sync_pagination);
+    TEST_RUN(test_peer_sync_dedup_by_name);
+    TEST_RUN(test_peer_sync_dedup_skips_through_to_unique);
+    TEST_RUN(test_peer_sync_peer_error_mid_chunk);
+    TEST_RUN(test_peer_sync_read_start_not_found_skips);
+    TEST_RUN(test_peer_sync_meta_error_is_best_effort);
+    TEST_RUN(test_peer_sync_end_aborts_in_flight);
+    TEST_RUN(test_peer_sync_only_one_session_at_a_time);
+    TEST_RUN(test_peer_sync_envelope_fits_mtu);
+
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 68, test_failures);
     return test_failures;
 }
