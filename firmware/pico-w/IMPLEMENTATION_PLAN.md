@@ -25,7 +25,7 @@
 - ⏳ WiFi upgrade — automatic home‑network connect and IP advertisement via BLE; TCP fallback for large transfers
 - ⏳ Reputation gossip — exchange of creator ratings and transport endorsements via Reputation Exchange characteristic
 - ⏳ Social layer (opt‑in) — encounter ledger, sync attestation, geolocation fingerprinting (see protocol/GAMIFICATION.md)
-- ⏳ Flipper Zero and CardPuter ports — legacy code; slated for removal/replacement
+- ⏳ Flipper Zero and CardPuter ports — planned
 
 ## Next Steps
 
@@ -33,8 +33,7 @@
 2. **WiFi Upgrade** – implement Wi‑Fi station mode, DHCP, and automatic reconnection to known SSIDs; advertise IP via BLE Device Config characteristic; implement a simple TCP server (Waxwing Wire Transfer) for payloads >1 MB.
 3. **Reputation Gossip** – add the Reputation Exchange characteristic (READ/WRITE) and implement the CBOR gossip format defined in the protocol spec.
 4. **Social Layer (Opt‑in)** – add optional characteristics for Sync Attestation, Encounter Ledger, and Endorsement Exchange; implement Wi‑Fi geolocation fingerprinting if desired.
-5. **Cleanup** – remove the legacy directory (`firmware/pico-w/waxwing/`) and any associated build scripts.
-6. **Documentation** – update READMEs and protocol docs as features land.
+5. **Documentation** – update READMEs and protocol docs as features land.
 
 ## Build & Test
 

@@ -36,11 +36,11 @@ The iOS app supports three content identity modes:
 
 - `CoreBluetooth` framework
 - `Combine` framework
-- `SwiftCBOR` or similar CBOR handling (see `CBOREncoder.swift`, `CBORDecoder.swift`)
-- `CryptoSwift` or `MonocypherSwift` for Ed25519 (if needed)
-- `JustAudio` / `AVFoundation` for media playback
-- `UIImagePickerController` for photo capture
-- `UserDefaults` / `Keychain` for settings and secrets
+- In-house CBOR encoder/decoder (`CBOREncoder.swift`, `CBORDecoder.swift`) — minimal, matched to the firmware codec
+- Apple `CryptoKit` for Ed25519
+- `AVFoundation` for media playback
+- `PhotosUI` / `PHPickerViewController` for photo selection
+- `Keychain` / `UserDefaults` for settings and secrets
 
 ## See Also
 

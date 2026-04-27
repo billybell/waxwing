@@ -78,7 +78,8 @@ firmware/pico-w/
 │   │   ├── cbor_decode.c/.h
 │   │   ├── commands.c/.h     # Command dispatch over CBOR (ls, read, write, etc.)
 │   │   ├── constants.h       # UUIDs, capability flags, protocol constants
-│   │   ├── filestore.h       # File storage interface
+│   │   ├── filestore.h       # File storage interface (user /files + system /system)
+│   │   ├── hal_crypto.h      # Crypto abstraction (RNG, SHA-256, Ed25519)
 │   │   └── identity.c/.h     # Transport identity (Ed25519) persistence
 │   ├── hw/pico-w/            # Pico W hardware‑specific wiring
 │   │   ├── ble.c/.h          # BLE GATT server (advertising, characteristics)
@@ -118,7 +119,7 @@ firmware/pico-w/
 - [x] Device Identity characteristic — CBOR‑encoded identity payload (includes firmware version)
 - [x] Connect / disconnect handling — restarts advertising after disconnect
 - [x] LED heartbeat — slow/fast blink indicating state
-- [x] Deploy script — `mpremote` sync + soft reset (legacy) / `build.sh` (C)
+- [x] Deploy script — `build.sh` produces `waxwing_mesh.uf2` for BOOTSEL flash
 
 ### Phase 2 ✅ — Manifest + Storage (implemented)
 - [x] SD card driver — mount FAT filesystem, read/write files
@@ -127,8 +128,8 @@ firmware/pico-w/
 - [x] File write (full and chunked) — open/append/close protocol
 - [x] File deletion
 - [x] Storage info (`storage_info`) — free/used bytes, file count
-- [x] Manifest generation — not yet implemented (planned for Phase 3)
-- [x] Real Ed25519 keypair — replaced SHA‑256 placeholder with proper crypto
+- [x] Ed25519 transport identity — hardware RNG seed + monocypher derivation
+- [ ] Manifest generation — planned for Phase 3
 
 ### Phase 3 🔲 — File Transfer (in progress)
 - [ ] Chunked BLE transfer — NOTIFY sender, sliding window ACK
@@ -139,10 +140,33 @@ firmware/pico-w/
 - [ ] Home network auto‑connect, IP advertisement via BLE
 - [ ] WiFi Wire Transfer — TCP server for payloads > 1 MB
 
-## Crypto Note
+## Storage layout (on-flash)
 
-The firmware now uses a **real Ed25519 keypair** for transport identity:
-- Private key generated from the hardware RNG (via `pico_rng_get_random`) and stored in flash.
-- Public key derived with monocypher; signing/verification also uses monocypher.
-- The identity file format (32‑byte private + 32‑byte public) matches the layout expected by the protocol and companion app.
-- No migration is needed; the existing identity file on flash will be regenerated on first boot with the new algorithm.
+The FatFS volume keeps user content and firmware-private blobs in
+separate directories:
+
+- `/files/` — user-visible files. Reachable via the BLE file commands
+  (`ls`, `read`, `write`, `delete`, `read_start/chunk`,
+  `write_start/chunk/end`, `read_meta`, `write_meta`).
+- `/system/` — firmware-private blobs (transport identity today; future
+  encounter records, attestations, etc.). Reachable only via the
+  `fs_system_*` API. No `cmd_*` in `commands.c` ever resolves a name
+  into this directory, so peers cannot enumerate or read it.
+
+Adding a new system blob: pick a logical name, use `fs_system_read /
+fs_system_write / fs_system_delete`, and — if peers need read access to
+some derivative — add a deliberate `cmd_*` that shapes the response.
+
+## Crypto
+
+Transport identity is a real Ed25519 keypair:
+
+- Private seed generated from the hardware RNG via the `hal_crypto`
+  abstraction (`hal_random_bytes`).
+- Public key derived with monocypher; signing and verification go
+  through the same `hal_crypto` interface.
+- Persisted as a 69-byte blob (`magic[4]` + `version` + `seed[32]` +
+  `pub[32]`) at `/system/identity.bin`. On load the firmware
+  re-derives the public key from the seed and regenerates the identity
+  if the stored pub doesn't match — guarding against silent corruption
+  and crypto-implementation changes.

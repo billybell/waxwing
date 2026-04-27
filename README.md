@@ -128,7 +128,7 @@ Waxwing/
 - ✅ **iOS companion app (Swift)** – scans, connects, reads Device Identity, lists files, reads/writes files, displays images.
 - ⏳ **Manifest generation & WiFi upgrade** – in progress.
 - ⏳ **Reputation gossip & social layer** – planned (opt‑in).
-- ⏳ Flipper Zero & CardPuter ports – C firmware planned; existing MicroPython code will be removed.
+- ⏳ Flipper Zero & CardPuter ports – planned.
 
 ---
 
