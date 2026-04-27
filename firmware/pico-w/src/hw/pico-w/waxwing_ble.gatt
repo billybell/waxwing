@@ -11,8 +11,13 @@ PRIMARY_SERVICE, CE575800-494E-4700-8000-00805F9B34FB
 // Device Identity - READ only (matches MicroPython CHAR_DEVICE_IDENTITY)
 CHARACTERISTIC, CE575801-494E-4700-8000-00805F9B34FB, READ | DYNAMIC,
 
-// File Command - WRITE only (matches MicroPython CHAR_FILE_COMMAND)
-CHARACTERISTIC, CE57580D-494E-4700-8000-00805F9B34FB, WRITE | DYNAMIC,
+// File Command - WRITE_WITHOUT_RESPONSE + WRITE so both iOS (Write
+// Request) and the Pico Central (Write Command) can target it.
+// Without WRITE_WITHOUT_RESPONSE here, btstack's ATT server silently
+// drops Write Commands to this characteristic with no callback,
+// which is why mesh-mode peer sync wedged on the very first ls
+// command. iOS still uses Write Request via .withResponse.
+CHARACTERISTIC, CE57580D-494E-4700-8000-00805F9B34FB, WRITE | WRITE_WITHOUT_RESPONSE | DYNAMIC,
 
 // File Response - READ | NOTIFY (matches MicroPython CHAR_FILE_RESPONSE)
 CHARACTERISTIC, CE57580E-494E-4700-8000-00805F9B34FB, READ | NOTIFY | DYNAMIC,
