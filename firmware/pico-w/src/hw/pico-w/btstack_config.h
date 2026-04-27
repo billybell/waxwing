@@ -1,8 +1,13 @@
 #ifndef _PICO_BTSTACK_BTSTACK_CONFIG_H
 #define _PICO_BTSTACK_BTSTACK_CONFIG_H
 
-// BTstack features that can be enabled
+// BTstack features that can be enabled.
+// Central role is required for mesh-mode peer sync (PEER_SYNC_PLAN.md):
+// the firmware scans for nearby Waxwing nodes, becomes Central on a
+// match, runs a one-direction file pull, and disconnects. Peripheral
+// is still required for companion connections + serving inbound peers.
 #define ENABLE_LE_PERIPHERAL
+#define ENABLE_LE_CENTRAL
 #define ENABLE_L2CAP_LE_CREDIT_BASED_FLOW_CONTROL_MODE
 #define ENABLE_LOG_DEBUG
 #define ENABLE_LOG_INFO
@@ -16,9 +21,14 @@
 #define HCI_OUTGOING_PRE_BUFFER_SIZE 4
 #define HCI_ACL_PAYLOAD_SIZE (255 + 4)
 #define HCI_ACL_CHUNK_SIZE_ALIGNMENT 4
+// Two LE connections: one inbound (companion or another peer pulling
+// from us) plus one outbound (us pulling from a peer). The mesh_state
+// FSM never enters SCANNING while we're already CONNECTED, so the
+// outbound slot is only used between sessions — but both slots need
+// to exist so the controller doesn't reject the second connect.
 #define MAX_NR_GATT_CLIENTS 1
-#define MAX_NR_HCI_CONNECTIONS 1
-#define MAX_NR_L2CAP_CHANNELS  4
+#define MAX_NR_HCI_CONNECTIONS 2
+#define MAX_NR_L2CAP_CHANNELS  6
 #define MAX_NR_L2CAP_SERVICES  3
 #define MAX_NR_WHITELIST_ENTRIES 1
 #define MAX_NR_LE_DEVICE_DB_ENTRIES 1

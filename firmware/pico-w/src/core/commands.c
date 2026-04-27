@@ -9,6 +9,7 @@
 #include "core/filestore.h"
 #include "core/cborencode.h"
 #include "core/cbor_decode.h"
+#include "core/manifest_counter.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -210,6 +211,7 @@ static int cmd_write(const uint8_t *body, const uint8_t *body_end, uint64_t pc,
 
     if (fs_write(name, v.data, (size_t)v.arg) != 0)
         return emit_error(out, out_max, "write failed");
+    manifest_counter_bump();    // /files/ changed → bump advertised hint
     return emit_ok(out, out_max);
 }
 
@@ -246,6 +248,7 @@ static int cmd_write_end(const uint8_t *body, const uint8_t *body_end,
         return emit_error(out, out_max, "missing name");
     if (fs_chunked_finish(name) < 0)
         return emit_error(out, out_max, "size mismatch");
+    manifest_counter_bump();    // /files/ changed → bump advertised hint
     return emit_ok(out, out_max);
 }
 
@@ -299,6 +302,7 @@ static int cmd_delete(const uint8_t *body, const uint8_t *body_end,
     if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
         return emit_error(out, out_max, "missing name");
     if (fs_delete(name) != 0) return emit_error(out, out_max, "not found");
+    manifest_counter_bump();    // /files/ changed → bump advertised hint
     return emit_ok(out, out_max);
 }
 
