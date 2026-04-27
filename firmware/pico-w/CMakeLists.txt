@@ -28,6 +28,7 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
         src/core/cbor_decode.c
         src/core/commands.c
         src/core/identity.c
+        src/core/manifest_counter.c
 
          # FatFS (local copy with custom ffconf.h).
         src/thirdparty/fatfs/ff.c
@@ -107,9 +108,11 @@ if(NOT CMAKE_CROSSCOMPILING)
         src/core/cbor_decode.c
         src/core/commands.c
         src/core/identity.c
+        src/core/manifest_counter.c
         tests/test_runner.c
         tests/test_commands.c
         tests/test_identity.c
+        tests/test_manifest_counter.c
         tests/mock_filestore.c
         tests/stub_ble.c
         tests/stub_hal_crypto.c

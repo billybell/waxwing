@@ -37,6 +37,13 @@ extern void test_identity_not_in_user_files(void);
 extern void test_identity_hex_encoding(void);
 extern void test_identity_b64url_encoding(void);
 
+extern void test_counter_starts_at_zero(void);
+extern void test_counter_persists(void);
+extern void test_counter_wraps_at_256(void);
+extern void test_counter_bump_writes_through(void);
+extern void test_counter_load_corrupted_blob(void);
+extern void test_counter_init_idempotent(void);
+
 int main(void) {
     TEST_RUN(test_ls_empty);
     TEST_RUN(test_ls_with_files);
@@ -72,6 +79,13 @@ int main(void) {
     TEST_RUN(test_identity_hex_encoding);
     TEST_RUN(test_identity_b64url_encoding);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 32, test_failures);
+    TEST_RUN(test_counter_starts_at_zero);
+    TEST_RUN(test_counter_persists);
+    TEST_RUN(test_counter_wraps_at_256);
+    TEST_RUN(test_counter_bump_writes_through);
+    TEST_RUN(test_counter_load_corrupted_blob);
+    TEST_RUN(test_counter_init_idempotent);
+
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 38, test_failures);
     return test_failures;
 }
