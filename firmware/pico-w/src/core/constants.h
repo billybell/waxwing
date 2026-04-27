@@ -83,11 +83,22 @@
 #define TRANSFER_WINDOW_SIZE 4
 #define DEFAULT_MTU 256
 
-// File storage limits (from filestore.py)
+// File storage limits
 #define MAX_FILE_SIZE 2048          // single-shot text file limit (bytes)
 #define MAX_CHUNKED_FILE_SIZE (512 * 1024)   // 512 KB hard cap per file
 #define STORAGE_RESERVE (32 * 1024)  // keep 32 KB free for firmware / GC headroom
 #define HASH_PREFIX_BYTES 8        // truncated SHA-256 prefix for manifest
 #define LIST_PAGE_SIZE 4           // entries per paginated ls response
+
+// Mesh-mode timing (Phase 3 peer sync; see PEER_SYNC_PLAN.md)
+#define MESH_GRACE_MS               10000     // boot companion-pair window
+#define MESH_DWELL_MIN_MS            1000     // alternation lower bound
+#define MESH_DWELL_MAX_MS            5000     // alternation upper bound
+#define MESH_DWELL_JITTER_PCT          20     // ±20 % on top of dwell draw
+#define PEER_SUCCESS_BACKOFF_MS    600000     // 10 min after a clean sync
+#define PEER_FAILED_BACKOFF_MS      30000     // 30 s after an error/disconnect
+#define PEER_BACKOFF_JITTER_PCT        20     // ±20 % so clocks don't realign
+#define PEER_TABLE_CAP                 32     // RAM-only LRU of seen peers
+#define PEER_TPK_PREFIX_LEN             8     // bytes of TPK we use as a key
 
 #endif // WAXWING_CONSTANTS_H

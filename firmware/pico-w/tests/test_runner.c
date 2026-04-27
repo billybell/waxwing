@@ -44,6 +44,17 @@ extern void test_counter_bump_writes_through(void);
 extern void test_counter_load_corrupted_blob(void);
 extern void test_counter_init_idempotent(void);
 
+extern void test_peer_unknown_connects(void);
+extern void test_peer_version_changed_connects(void);
+extern void test_peer_caught_up_skips_within_window(void);
+extern void test_peer_caught_up_connects_after_window(void);
+extern void test_peer_failed_uses_short_backoff(void);
+extern void test_peer_wraparound_inequality_triggers_sync(void);
+extern void test_peer_lru_evicts_oldest(void);
+extern void test_peer_record_updates_in_place(void);
+extern void test_peer_distinct_tpks_isolated(void);
+extern void test_peer_init_clears(void);
+
 int main(void) {
     TEST_RUN(test_ls_empty);
     TEST_RUN(test_ls_with_files);
@@ -86,6 +97,17 @@ int main(void) {
     TEST_RUN(test_counter_load_corrupted_blob);
     TEST_RUN(test_counter_init_idempotent);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 38, test_failures);
+    TEST_RUN(test_peer_unknown_connects);
+    TEST_RUN(test_peer_version_changed_connects);
+    TEST_RUN(test_peer_caught_up_skips_within_window);
+    TEST_RUN(test_peer_caught_up_connects_after_window);
+    TEST_RUN(test_peer_failed_uses_short_backoff);
+    TEST_RUN(test_peer_wraparound_inequality_triggers_sync);
+    TEST_RUN(test_peer_lru_evicts_oldest);
+    TEST_RUN(test_peer_record_updates_in_place);
+    TEST_RUN(test_peer_distinct_tpks_isolated);
+    TEST_RUN(test_peer_init_clears);
+
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 48, test_failures);
     return test_failures;
 }
