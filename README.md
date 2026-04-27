@@ -2,7 +2,7 @@
 
 > *Cedar waxwings are known for one remarkable behaviour: they pass berries beak-to-beak down a line of birds, one at a time, until every bird has eaten. No coordinator. No hierarchy. Just community.*
 
-Waxwing Mesh is an open protocol and application suite for opportunistic, privacy-preserving file sharing over Bluetooth Low Energy — with automatic WiFi upgrade for large transfers. Devices running Waxwing Mesh form a delay-tolerant network (DTN): when two devices come within range of each other, they exchange content automatically, without any infrastructure, accounts, or internet connection required.
+Waxwing Mesh is an open protocol and application suite for opportunistic, privacy-preserving file sharing over Bluetooth Low Energy — with optional WiFi upgrade for large transfers. Devices running Waxwing Mesh form a delay-tolerant network (DTN): when two devices come within range of each other, they exchange content automatically, without any infrastructure, accounts, or internet connection required.
 
 Content spreads the way waxwings share berries — peer to peer, device to device, carried by people moving through the world.
 
@@ -12,7 +12,7 @@ Content spreads the way waxwings share berries — peer to peer, device to devic
 
 A **Waxwing node** is a small, portable device (a Raspberry Pi Pico W with an SD card, a Flipper Zero, a CardPuter) that you carry with you. It advertises via BLE, connects promiscuously to other Waxwing nodes it encounters, compares content libraries, and exchanges files neither device has seen before.
 
-A **Waxwing companion app** (iOS/Android) is how you interact with your node when you're near it — browsing content, consuming media, rating what you've seen, pushing your own content into the network, and configuring your node's preferences and subscriptions.
+A **Waxwing companion app** (iOS) is how you interact with your node when you're near it — browsing content, consuming media, rating what you've seen, pushing your own content into the network, and configuring your node's preferences and subscriptions.
 
 Together, they form a mesh that requires no servers, no accounts, and no internet — while still being able to use WiFi opportunistically when available.
 
@@ -43,8 +43,8 @@ Together, they form a mesh that requires no servers, no accounts, and no interne
 | Raspberry Pi Pico W | Reference mesh node | CYW43439 BLE 4.2 + WiFi; add SD card + LiPo for portable node |
 | Flipper Zero | Mesh node | nRF52840 BLE; custom Flipper app; good for testing |
 | M5Stack CardPuter ADV | Mesh node | ESP32-S3; BLE + WiFi; compact form factor |
-| iOS (iPhone) | Companion app | Primary target; Flutter app |
-| Android | Companion app | Secondary target; same Flutter codebase |
+| iOS (iPhone) | Companion app | Primary target; Swift app |
+| Android | Companion app | Secondary target (planned) |
 
 ---
 
@@ -95,7 +95,7 @@ When a node returns to its home WiFi network, it connects automatically and adve
 ## Repository Structure
 
 ```
-waxwing/
+Waxwing/
 ├── README.md               # This file
 ├── PROTOCOL.md             # Full protocol specification (start here)
 ├── protocol/
@@ -103,13 +103,12 @@ waxwing/
 │   └── schemas/
 │       ├── file-metadata.schema.json
 │       └── manifest.schema.json
-│   # Note: GATT.md, IDENTITY.md, TRANSFER.md, and PROPAGATION.md are planned as
-│   # standalone reference files. Their content is currently covered in PROTOCOL.md.
 ├── firmware/
-│   ├── pico-w/             # Reference node — MicroPython (Pico W)
-│   ├── flipper/            # Flipper Zero app
-│   └── cardputer/          # ESP32-S3 / Arduino framework
-├── mobile/                 # Flutter companion app (iOS primary, Android)
+│   ├── pico-w/             # Raspberry Pi Pico W (C firmware)
+│   ├── flipper/            # Flipper Zero – C firmware planned
+│   └── cardputer/          # M5Stack CardPuter – C firmware planned
+├── ios/
+│   └── WaxwingCompanion/   # Native Swift companion app (iOS)
 ├── tools/                  # BLE sniffers, test harnesses, manifest generators
 └── docs/
     ├── architecture.md     # Extended architecture discussion (planned)
@@ -122,20 +121,14 @@ waxwing/
 
 ## Status
 
-**Pre-alpha — protocol design phase.**
+**Alpha – core functionality implemented.**
 
-- [x] Architecture design
-- [x] Protocol specification (v0.1)
-- [ ] Pico W reference firmware
-- [ ] Flutter companion app (iOS)
-- [ ] Flipper Zero app
-- [ ] CardPuter ADV firmware
-- [ ] Flutter companion app (Android)
-- [ ] WiFi upgrade implementation
-- [ ] Reputation gossip implementation
-- [ ] Subscription and recommendation system
-- [ ] Social layer: encounter ledger, sync map, peer graph (opt-in)
-- [ ] Sync attestation with WiFi geolocation fingerprinting (opt-in)
+- ✅ **Pico W firmware (C)** – BLE advertising, Device Identity characteristic, file commands (`ls`, `read`, `write`, `delete`, `storage_info`), FAT filesystem, CBOR codec, Ed25519 transport identity via monocypher.
+- ✅ **Host unit tests** – `./build-host/waxwing_test` passes (build with `-DWAXWING_HOST_BUILD=ON`).
+- ✅ **iOS companion app (Swift)** – scans, connects, reads Device Identity, lists files, reads/writes files, displays images.
+- ⏳ **Manifest generation & WiFi upgrade** – in progress.
+- ⏳ **Reputation gossip & social layer** – planned (opt‑in).
+- ⏳ Flipper Zero & CardPuter ports – C firmware planned; existing MicroPython code will be removed.
 
 ---
 
@@ -147,7 +140,7 @@ This repository implements **Waxwing Mesh Protocol v0.1**. See `PROTOCOL.md` for
 
 ## Name
 
-The cedar waxwing (*Bombycilla cedrorum*) is a North American songbird known for passing berries beak-to-beak along a line of perched birds — a spontaneous act of community sharing with no leader and no queue manager. It is one of nature's clearest illustrations of a relay network.
+The cedar waxwing (*Bombycilla cedrorum*) is a North American songbird known for passing berries beak‑to‑beak along a line of perched birds — a spontaneous act of community sharing with no leader and no queue manager. It is one of nature's clearest illustrations of a relay network.
 
 ---
 

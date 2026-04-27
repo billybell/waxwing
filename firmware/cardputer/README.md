@@ -12,7 +12,7 @@
 
 The ESP32-S3 provides BLE 5.0 and WiFi. The built-in display makes the CardPuter useful for showing mesh status, transfer progress, and simple content preview. The keyboard could support basic content creation (short text notes) directly on the device.
 
-Firmware can be written using the Arduino framework or ESP-IDF. MicroPython is also available for initial prototyping.
+Firmware can be written using the Arduino framework or ESP-IDF.
 
 ## Implementation Plan
 

@@ -1098,7 +1098,7 @@ All Waxwing UUIDs use the base suffix `-494E-4700-8000-00805F9B34FB` (encoding "
 
 ## 17. Encoding
 
-All structured data in Waxwing Mesh characteristics is encoded using **CBOR** (Concise Binary Object Representation, RFC 8949). CBOR is compact, self-describing, and has good library support across all target platforms (MicroPython, C, Dart, Swift, Kotlin).
+All structured data in Waxwing Mesh characteristics is encoded using **CBOR** (Concise Binary Object Representation, RFC 8949). CBOR is compact, self-describing, and has good library support across all target platforms (C, Dart, Swift, Kotlin).
 
 Where binary precision matters (public keys, signatures, file IDs), values are encoded as CBOR byte strings (`bstr`), not base64 text strings.
 

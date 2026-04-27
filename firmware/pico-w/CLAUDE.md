@@ -23,5 +23,5 @@ Output: `build/waxwing_mesh.uf2` (Pico W BOOTSEL flash target)
 
 ```
 src/         — C code (main.c, ble.c, identity.c, utils.c, constants.h, etc.)
-waxwing/     — Python/MicroPython BLE stack (cbor.py, messages.py, identity.py)
+waxwing/     — Legacy BLE stack (cbor.py, messages.py, identity.py) – not used in current build
 ```
