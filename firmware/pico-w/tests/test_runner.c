@@ -33,6 +33,7 @@ extern void test_identity_wrong_magic_regenerates(void);
 extern void test_identity_wrong_version_regenerates(void);
 extern void test_identity_short_blob_regenerates(void);
 extern void test_identity_node_name_format(void);
+extern void test_identity_not_in_user_files(void);
 extern void test_identity_hex_encoding(void);
 extern void test_identity_b64url_encoding(void);
 
@@ -67,9 +68,10 @@ int main(void) {
     TEST_RUN(test_identity_wrong_version_regenerates);
     TEST_RUN(test_identity_short_blob_regenerates);
     TEST_RUN(test_identity_node_name_format);
+    TEST_RUN(test_identity_not_in_user_files);
     TEST_RUN(test_identity_hex_encoding);
     TEST_RUN(test_identity_b64url_encoding);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 31, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 32, test_failures);
     return test_failures;
 }

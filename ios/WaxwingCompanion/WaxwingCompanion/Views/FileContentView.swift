@@ -69,13 +69,24 @@ struct FileContentView: View {
                                     }
                             }
                         }
-                    } else if let content = bleManager.fileContent {
+                    } else if let data = fileData, let text = decodeText(data) {
                 ScrollView {
-                    Text(content)
+                    Text(text)
                             .font(.body.monospaced())
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding()
                             .textSelection(.enabled)
+                    }
+                } else if let data = fileData {
+                VStack(spacing: 8) {
+                    Image(systemName: "doc.fill")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.secondary)
+                    Text("Binary file")
+                            .foregroundStyle(.secondary)
+                    Text("\(data.count) bytes")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                     }
                 } else {
                 Text("No content")
@@ -124,6 +135,16 @@ struct FileContentView: View {
             return
            }
         self.fileData = data
+        }
+
+        /// Decode `data` as UTF-8 text only if every byte is valid UTF-8 and
+        /// the result has no embedded NULs (a strong signal of binary data).
+        /// Returns nil for files we should render with the binary fallback.
+    private func decodeText(_ data: Data) -> String? {
+        guard !data.isEmpty else { return "" }
+        guard let s = String(data: data, encoding: .utf8) else { return nil }
+        if s.contains("\u{0}") { return nil }
+        return s
         }
 
         /// True if the data starts with a recognized image magic header.

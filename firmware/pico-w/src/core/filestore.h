@@ -137,4 +137,28 @@ int fs_write_meta(const char *name, const uint8_t *data, size_t len);
 /** Read a metadata sidecar. Returns bytes read, -1 if not found. */
 int fs_read_meta(const char *name, uint8_t *buf, size_t buf_size);
 
+/* ---------------------------------------------------------------------------
+ * System blobs
+ *
+ * Persistent files used by the firmware itself: transport identity, future
+ * encounter records, signed attestations, etc. They live in a separate
+ * directory (/system/) and are NEVER reachable from the BLE file-command
+ * surface — fs_list, fs_read, fs_write, fs_delete only see /files/. Any
+ * exposure of system data to peers must go through a deliberate API.
+ * --------------------------------------------------------------------------- */
+
+/** Read a system blob. Returns bytes read, -1 if not found or error. */
+int fs_system_read(const char *name, uint8_t *buf, size_t buf_size);
+
+/**
+ * Write a system blob (creates or overwrites). Bypasses the user-files
+ * single-shot size limit so identity/attestation blobs aren't artificially
+ * capped, but still subject to free-space checks.
+ * Returns 0 on success, -1 on error.
+ */
+int fs_system_write(const char *name, const uint8_t *data, size_t len);
+
+/** Delete a system blob. Returns 0 on success, -1 if not found or error. */
+int fs_system_delete(const char *name);
+
 #endif // WAXWING_FILESTORE_H

@@ -94,7 +94,7 @@ void test_identity_load_existing(void) {
     uint8_t blob[IDENTITY_BLOB_SIZE];
     make_blob(blob, IDENTITY_MAGIC0, IDENTITY_MAGIC1, IDENTITY_MAGIC2,
               IDENTITY_MAGIC3, IDENTITY_VERSION, seed, pub);
-    mock_fs_add_entry(IDENTITY_BLOB_NAME, blob, sizeof(blob));
+    mock_fs_add_system_entry(IDENTITY_BLOB_NAME, blob, sizeof(blob));
 
     waxwing_identity_t id;
     bool ok = waxwing_identity_load_or_generate(&id);
@@ -119,7 +119,7 @@ void test_identity_corrupted_pub_regenerates(void) {
     uint8_t blob[IDENTITY_BLOB_SIZE];
     make_blob(blob, IDENTITY_MAGIC0, IDENTITY_MAGIC1, IDENTITY_MAGIC2,
               IDENTITY_MAGIC3, IDENTITY_VERSION, seed, bad_pub);
-    mock_fs_add_entry(IDENTITY_BLOB_NAME, blob, sizeof(blob));
+    mock_fs_add_system_entry(IDENTITY_BLOB_NAME, blob, sizeof(blob));
 
     waxwing_identity_t id;
     bool ok = waxwing_identity_load_or_generate(&id);
@@ -138,7 +138,7 @@ void test_identity_wrong_magic_regenerates(void) {
     clear_state();
     uint8_t blob[IDENTITY_BLOB_SIZE];
     make_blob(blob, 'B', 'A', 'D', '!', IDENTITY_VERSION, NULL, NULL);
-    mock_fs_add_entry(IDENTITY_BLOB_NAME, blob, sizeof(blob));
+    mock_fs_add_system_entry(IDENTITY_BLOB_NAME, blob, sizeof(blob));
 
     waxwing_identity_t id;
     bool ok = waxwing_identity_load_or_generate(&id);
@@ -157,7 +157,7 @@ void test_identity_wrong_version_regenerates(void) {
     make_blob(blob, IDENTITY_MAGIC0, IDENTITY_MAGIC1, IDENTITY_MAGIC2,
               IDENTITY_MAGIC3, (uint8_t)(IDENTITY_VERSION + 7),
               NULL, NULL);
-    mock_fs_add_entry(IDENTITY_BLOB_NAME, blob, sizeof(blob));
+    mock_fs_add_system_entry(IDENTITY_BLOB_NAME, blob, sizeof(blob));
 
     waxwing_identity_t id;
     bool ok = waxwing_identity_load_or_generate(&id);
@@ -174,7 +174,7 @@ void test_identity_short_blob_regenerates(void) {
     clear_state();
     uint8_t short_blob[10] = { 'W', 'X', 'I', 'D', IDENTITY_VERSION,
                                 0, 0, 0, 0, 0 };
-    mock_fs_add_entry(IDENTITY_BLOB_NAME, short_blob, sizeof(short_blob));
+    mock_fs_add_system_entry(IDENTITY_BLOB_NAME, short_blob, sizeof(short_blob));
 
     waxwing_identity_t id;
     bool ok = waxwing_identity_load_or_generate(&id);
@@ -197,7 +197,7 @@ void test_identity_node_name_format(void) {
     uint8_t blob[IDENTITY_BLOB_SIZE];
     make_blob(blob, IDENTITY_MAGIC0, IDENTITY_MAGIC1, IDENTITY_MAGIC2,
               IDENTITY_MAGIC3, IDENTITY_VERSION, seed, pub);
-    mock_fs_add_entry(IDENTITY_BLOB_NAME, blob, sizeof(blob));
+    mock_fs_add_system_entry(IDENTITY_BLOB_NAME, blob, sizeof(blob));
 
     waxwing_identity_t id;
     waxwing_identity_load_or_generate(&id);
@@ -205,6 +205,36 @@ void test_identity_node_name_format(void) {
                 "node_name is WX: + uppercase hex of pub[0..3]");
     TEST_ASSERT(strcmp(id.fingerprint, "4a4a4a4a") == 0,
                 "fingerprint is lowercase hex of pub[0..3]");
+}
+
+// ---------------------------------------------------------------------------
+// test_identity_not_in_user_files — identity must be invisible to the BLE
+// file surface. fs_list, fs_read, fs_file_size on the user namespace must
+// not see the identity blob.
+// ---------------------------------------------------------------------------
+
+void test_identity_not_in_user_files(void) {
+    clear_state();
+
+    waxwing_identity_t id;
+    bool ok = waxwing_identity_load_or_generate(&id);
+    TEST_ASSERT(ok, "fresh identity generated");
+
+    char names[8][FS_MAX_NAME_LEN];
+    uint32_t sizes[8];
+    uint8_t hashes[8][8];
+    int next_off = 0;
+    int n = fs_list(names, sizes, hashes, 8, 0, 8, &next_off);
+    for (int i = 0; i < n; i++) {
+        TEST_ASSERT(strcmp(names[i], IDENTITY_BLOB_NAME) != 0,
+                    "fs_list does not enumerate identity.bin");
+    }
+
+    uint8_t buf[128];
+    TEST_ASSERT(fs_read(IDENTITY_BLOB_NAME, buf, sizeof(buf)) < 0,
+                "fs_read by name cannot return identity bytes");
+    TEST_ASSERT(fs_file_size(IDENTITY_BLOB_NAME) < 0,
+                "fs_file_size by name cannot reveal identity");
 }
 
 // ---------------------------------------------------------------------------

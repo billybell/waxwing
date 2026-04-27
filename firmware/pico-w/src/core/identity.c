@@ -89,12 +89,12 @@ static bool blob_has_valid_header(const uint8_t *blob) {
 }
 
 static bool load_blob(uint8_t *blob_out) {
-    int n = fs_read(IDENTITY_BLOB_NAME, blob_out, IDENTITY_BLOB_SIZE);
+    int n = fs_system_read(IDENTITY_BLOB_NAME, blob_out, IDENTITY_BLOB_SIZE);
     return n == IDENTITY_BLOB_SIZE;
 }
 
 static bool save_blob(const uint8_t *blob) {
-    return fs_write(IDENTITY_BLOB_NAME, blob, IDENTITY_BLOB_SIZE) == 0;
+    return fs_system_write(IDENTITY_BLOB_NAME, blob, IDENTITY_BLOB_SIZE) == 0;
 }
 
 static void serialize_blob(const waxwing_identity_t *identity, uint8_t *blob) {
@@ -163,6 +163,6 @@ bool waxwing_identity_load_or_generate(waxwing_identity_t *identity) {
 }
 
 void waxwing_identity_wipe(void) {
-    fs_delete(IDENTITY_BLOB_NAME);
+    fs_system_delete(IDENTITY_BLOB_NAME);
     printf("[identity] Identity wiped\r\n");
 }

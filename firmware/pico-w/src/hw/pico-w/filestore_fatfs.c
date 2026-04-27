@@ -11,6 +11,7 @@
 // ---------------------------------------------------------------------------
 
 #define FILES_DIR_NAME      "/files"
+#define SYSTEM_DIR_NAME     "/system"
 #define META_SUFFIX         ".meta"
 #define MAX_SHOT_FILE_SIZE  2048        // single-shot write limit
 #define MAX_CHUNKED_SIZE    (512 * 1024)
@@ -59,6 +60,16 @@ static bool build_meta_path(const char *name, char *out, size_t out_size) {
     return n > 0 && (size_t)n < out_size;
 }
 
+// /system/<name>. Same name-validation rules as user files (no slashes,
+// non-empty). System paths are only resolved by fs_system_* — there is no
+// command in commands.c that reaches this directory.
+static bool build_system_path(const char *name, char *out, size_t out_size) {
+    if (!name || !*name) return false;
+    if (strchr(name, '/') != NULL) return false;
+    int n = snprintf(out, out_size, SYSTEM_DIR_NAME "/%s", name);
+    return n > 0 && (size_t)n < out_size;
+}
+
 // ---------------------------------------------------------------------------
 // Init / mount
 // ---------------------------------------------------------------------------
@@ -91,6 +102,19 @@ static int mount_and_ensure_dir(void) {
         printf("[filestore] Created " FILES_DIR_NAME "\r\n");
     } else if (res != FR_OK) {
         printf("[filestore] f_stat(" FILES_DIR_NAME ") failed: %d\r\n", res);
+        return -1;
+    }
+
+    res = f_stat(SYSTEM_DIR_NAME, NULL);
+    if (res == FR_NO_FILE || res == FR_NO_PATH) {
+        res = f_mkdir(SYSTEM_DIR_NAME);
+        if (res != FR_OK) {
+            printf("[filestore] f_mkdir(" SYSTEM_DIR_NAME ") failed: %d\r\n", res);
+            return -1;
+        }
+        printf("[filestore] Created " SYSTEM_DIR_NAME "\r\n");
+    } else if (res != FR_OK) {
+        printf("[filestore] f_stat(" SYSTEM_DIR_NAME ") failed: %d\r\n", res);
         return -1;
     }
     return 0;
@@ -400,4 +424,45 @@ int fs_read_meta(const char *name, uint8_t *buf, size_t buf_size) {
     FRESULT res = f_read(&fil, buf, (UINT)buf_size, &br);
     f_close(&fil);
     return (res == FR_OK) ? (int)br : -1;
+}
+
+// ---------------------------------------------------------------------------
+// System blobs (/system/) — never reachable from BLE file commands.
+// ---------------------------------------------------------------------------
+
+int fs_system_read(const char *name, uint8_t *buf, size_t buf_size) {
+    if (!fs_mounted) return -1;
+    char path[64];
+    if (!build_system_path(name, path, sizeof(path))) return -1;
+    FIL fil;
+    if (f_open(&fil, path, FA_READ) != FR_OK) return -1;
+    UINT br = 0;
+    FRESULT res = f_read(&fil, buf, (UINT)buf_size, &br);
+    f_close(&fil);
+    return (res == FR_OK) ? (int)br : -1;
+}
+
+int fs_system_write(const char *name, const uint8_t *data, size_t len) {
+    if (!fs_mounted) return -1;
+    char path[64];
+    if (!build_system_path(name, path, sizeof(path))) return -1;
+
+    FIL fil;
+    if (f_open(&fil, path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return -1;
+    UINT bw = 0;
+    FRESULT res = f_write(&fil, data, (UINT)len, &bw);
+    f_sync(&fil);
+    f_close(&fil);
+    if (res != FR_OK || (size_t)bw != len) return -1;
+    printf("[filestore] Wrote %s (%zu bytes)\r\n", path, len);
+    return 0;
+}
+
+int fs_system_delete(const char *name) {
+    if (!fs_mounted) return -1;
+    char path[64];
+    if (!build_system_path(name, path, sizeof(path))) return -1;
+    if (f_unlink(path) != FR_OK) return -1;
+    printf("[filestore] Deleted %s\r\n", path);
+    return 0;
 }

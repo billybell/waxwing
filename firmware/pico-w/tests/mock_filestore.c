@@ -5,6 +5,8 @@
 #include <stdio.h>
 
 #define MAX_FILES 64
+#define MAX_SYSTEM_FILES 8
+#define SYSTEM_BLOB_MAX 256
 
 static char file_names[MAX_FILES][FS_MAX_NAME_LEN];
 static uint8_t file_data[MAX_FILES][1024]; // max inline data cap from commands.c
@@ -12,6 +14,19 @@ static size_t file_lens[MAX_FILES];
 static uint8_t meta_data[MAX_FILES][256]; // sidecar meta storage
 static size_t meta_lens[MAX_FILES];
 static int file_count = 0;
+
+// /system/ namespace — separate store, never visible to fs_list/fs_read.
+static char sys_names[MAX_SYSTEM_FILES][FS_MAX_NAME_LEN];
+static uint8_t sys_data[MAX_SYSTEM_FILES][SYSTEM_BLOB_MAX];
+static size_t sys_lens[MAX_SYSTEM_FILES];
+static int sys_count = 0;
+
+static int find_system(const char *name) {
+    for (int i = 0; i < sys_count; i++) {
+        if (strcmp(sys_names[i], name) == 0) return i;
+    }
+    return -1;
+}
 
 // Chunked write state + in-memory accumulator for data being streamed via chunks
 static char chunk_name[FS_MAX_NAME_LEN];
@@ -89,12 +104,27 @@ void mock_fs_add_entry(const char *name, const uint8_t *data, size_t len) {
     sort_files();
 }
 
+void mock_fs_add_system_entry(const char *name, const uint8_t *data, size_t len) {
+    if (sys_count >= MAX_SYSTEM_FILES || len > SYSTEM_BLOB_MAX) return;
+    int idx = find_system(name);
+    if (idx < 0) {
+        idx = sys_count++;
+        strncpy(sys_names[idx], name, FS_MAX_NAME_LEN - 1);
+        sys_names[idx][FS_MAX_NAME_LEN - 1] = '\0';
+    }
+    memcpy(sys_data[idx], data, len);
+    sys_lens[idx] = len;
+}
+
 void mock_fs_clear(void) {
     file_count = 0;
     memset(chunk_buf, 0, sizeof(chunk_buf));
     chunk_active = 0;
     memset(meta_data, 0, sizeof(meta_data));
     memset(meta_lens, 0, sizeof(meta_lens));
+    sys_count = 0;
+    memset(sys_data, 0, sizeof(sys_data));
+    memset(sys_lens, 0, sizeof(sys_lens));
 }
 
 int fs_init(void) { return 0; }
@@ -296,4 +326,37 @@ int fs_read_meta(const char *name, uint8_t *buf, size_t buf_size) {
     size_t n = meta_lens[midx] > buf_size ? buf_size : meta_lens[midx];
     memcpy(buf, meta_data[midx], n);
     return (int)n;
+}
+
+int fs_system_read(const char *name, uint8_t *buf, size_t buf_size) {
+    int idx = find_system(name);
+    if (idx < 0) return -1;
+    size_t n = sys_lens[idx] > buf_size ? buf_size : sys_lens[idx];
+    memcpy(buf, sys_data[idx], n);
+    return (int)n;
+}
+
+int fs_system_write(const char *name, const uint8_t *data, size_t len) {
+    if (len > SYSTEM_BLOB_MAX) return -1;
+    int idx = find_system(name);
+    if (idx < 0) {
+        if (sys_count >= MAX_SYSTEM_FILES) return -1;
+        idx = sys_count++;
+        strncpy(sys_names[idx], name, FS_MAX_NAME_LEN - 1);
+        sys_names[idx][FS_MAX_NAME_LEN - 1] = '\0';
+    }
+    memcpy(sys_data[idx], data, len);
+    sys_lens[idx] = len;
+    return 0;
+}
+
+int fs_system_delete(const char *name) {
+    int idx = find_system(name);
+    if (idx < 0) return -1;
+    int tail = sys_count - 1 - idx;
+    memmove(&sys_names[idx], &sys_names[idx + 1], tail * FS_MAX_NAME_LEN);
+    memmove(&sys_data[idx],  &sys_data[idx + 1],  tail * sizeof(sys_data[0]));
+    memmove(&sys_lens[idx],  &sys_lens[idx + 1],  tail * sizeof(sys_lens[0]));
+    sys_count--;
+    return 0;
 }
