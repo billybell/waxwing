@@ -103,12 +103,50 @@ firmware/pico-w/
     └── stub_hal_crypto.c     # Crypto stub for host tests
 ```
 
+## Mesh mode (Phase 3)
+
+After identity load, the firmware enters a 10-second **companion grace
+window** — peripheral only, scanning off — so a phone can pair without
+racing peer-side scanning. The window can be preempted by an immediate
+companion connection. After grace expires (or the companion
+disconnects), the node enters **mesh mode**: it alternates between
+**advertising** and **scanning** with a fresh random dwell drawn each
+flip in the range [1 s, 5 s] ±20 %. A connection from any source
+(companion or peer) freezes the alternation; on disconnect, a new
+dwell is drawn and the node resumes.
+
+When the scanning side spots a peer's advertisement, a small RAM-only
+LRU of recently-encountered peers (32 entries) decides whether to
+connect or skip. The decision uses two signals:
+
+- A 1-byte **manifest counter** carried in our service-data
+  advertisement block. Any inequality between the peer's advertised
+  counter and the value we recorded at last sync triggers a CONNECT —
+  even within the backoff window — because the counter wraps and has
+  no ordering, so any change means something on the peer changed.
+- A **backoff window** as the correctness floor. 10 minutes after a
+  clean sync; 30 seconds after a mid-session error. Counter equality
+  + within the backoff = SKIP.
+
+The counter is incremented exactly once per successful mutation of
+`/files/` (companion write, companion delete, peer pull commit).
+Persisted at `/system/manifest_version.bin`; survives reboot.
+
+A connection with the peer is one-direction: the Central pulls every
+file the Peripheral has that the Central doesn't, plus matching
+`.meta` sidecars. No bidirectional sync per session — over many
+encounters the population converges because both nodes will be
+Central in roughly half the sessions. See `PEER_SYNC_PLAN.md` for the
+full design.
+
 ## LED Patterns
 
 | Pattern | Meaning |
 |---|---|
-| Slow blink (1 s on / 1 s off) | Advertising, waiting for connection |
-| Fast blink (100 ms on / 100 ms off) | Peer connected |
+| 50 ms strobe | Boot grace window (companion can pair) |
+| 1 s slow blink | Mesh mode, advertising |
+| Double-blink (100 / 100 / 100 / 700) | Mesh mode, scanning for peers |
+| 100 ms fast blink | Connected (companion or peer sync in flight) |
 | 3 rapid flashes | Fatal error — check serial output |
 
 ## Implementation Phases
