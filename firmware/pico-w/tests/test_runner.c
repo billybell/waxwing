@@ -55,6 +55,15 @@ extern void test_peer_record_updates_in_place(void);
 extern void test_peer_distinct_tpks_isolated(void);
 extern void test_peer_init_clears(void);
 
+extern void test_mesh_starts_in_grace(void);
+extern void test_mesh_grace_expires_to_advertising(void);
+extern void test_mesh_grace_expires_to_scanning(void);
+extern void test_mesh_dwell_within_bounds(void);
+extern void test_mesh_alternates_or_repeats(void);
+extern void test_mesh_companion_freezes_schedule(void);
+extern void test_mesh_grace_skipped_if_companion_connects_immediately(void);
+extern void test_mesh_jitter_breaks_lockstep(void);
+
 int main(void) {
     TEST_RUN(test_ls_empty);
     TEST_RUN(test_ls_with_files);
@@ -108,6 +117,15 @@ int main(void) {
     TEST_RUN(test_peer_distinct_tpks_isolated);
     TEST_RUN(test_peer_init_clears);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 48, test_failures);
+    TEST_RUN(test_mesh_starts_in_grace);
+    TEST_RUN(test_mesh_grace_expires_to_advertising);
+    TEST_RUN(test_mesh_grace_expires_to_scanning);
+    TEST_RUN(test_mesh_dwell_within_bounds);
+    TEST_RUN(test_mesh_alternates_or_repeats);
+    TEST_RUN(test_mesh_companion_freezes_schedule);
+    TEST_RUN(test_mesh_grace_skipped_if_companion_connects_immediately);
+    TEST_RUN(test_mesh_jitter_breaks_lockstep);
+
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 56, test_failures);
     return test_failures;
 }
