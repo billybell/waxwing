@@ -812,8 +812,16 @@ extension BLEManager: CBCentralManagerDelegate {
         // Double-check the peripheral is actually advertising the Waxwing service.
         // scanForPeripherals(withServices:) is a hint, but CoreBluetooth can still
         // surface cached peripherals that aren't actively advertising our UUID.
-        guard let serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID],
-              serviceUUIDs.contains(WaxwingUUID.service) else {
+        //
+        // The firmware advertises its UUID via service-data (AD type 0x21) so the
+        // peer-sync manifest_version byte rides along. Older builds used the
+        // standalone "complete list of 128-bit UUIDs" block (AD type 0x07).
+        // Core Bluetooth surfaces the two AD types under different keys —
+        // accept either so we keep working across firmware versions.
+        let serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
+        let serviceData = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data] ?? [:]
+        guard serviceUUIDs.contains(WaxwingUUID.service) ||
+              serviceData[WaxwingUUID.service] != nil else {
             return
         }
 

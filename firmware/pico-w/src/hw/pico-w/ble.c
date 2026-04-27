@@ -53,6 +53,13 @@ static size_t  g_file_resp_len = 0;
 // Node name for scan response (set via ble_set_identity)
 static char g_node_name[16] = "Waxwing";
 
+// Cached 1-byte manifest_version we tack onto the end of the service-data
+// AD block. Updated via ble_set_manifest_version; the new value takes
+// effect at the next gap_advertisements_set_data call (immediate when
+// already advertising, queued for first-start otherwise).
+static uint8_t g_manifest_version = 0;
+static bool    g_advertising_started = false;
+
 // Callbacks (set from main.c)
 static ble_on_connect_cb    g_on_connect_cb      = NULL;
 static ble_on_disconnect_cb g_on_disconnect_cb = NULL;
@@ -447,22 +454,50 @@ static void att_event_handler(uint8_t packet_type, uint16_t channel,
 // Advertising
 // ============================================================
 
+// Build the AD payload — flags + service-data (UUID + manifest_version).
+//
+// Layout (22 bytes total, well inside the 31-byte cap):
+//
+//   0x02 0x01 0x06                            // Flags (LE General Discoverable, BR/EDR not supported)
+//   0x12 0x21                                 // Length 18, type SERVICE_DATA_128_BIT_UUID
+//   0xfb 0x34 ... 0xce                        // 16 UUID bytes (little-endian wire order)
+//   <manifest_version>                        // 1-byte payload — peer scanners use this to
+//                                             // decide whether a previously-synced node has
+//                                             // anything new to share (PEER_SYNC_PLAN.md §3.6).
+//
+// The earlier layout used type 0x07 (Complete List of 128-bit Service
+// Class UUIDs) with no payload. We swapped to service-data so the
+// counter byte rides along in the primary advertisement; the UUID
+// itself is still announced (Core Bluetooth surfaces it via either
+// CBAdvertisementDataServiceUUIDsKey or CBAdvertisementDataServiceDataKey).
+static size_t build_adv_data(uint8_t out[31]) {
+    static const uint8_t uuid_le[16] = {
+        0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+        0x00, 0x47, 0x4e, 0x49, 0x00, 0x58, 0x57, 0xce,
+    };
+    size_t i = 0;
+    out[i++] = 0x02;
+    out[i++] = BLUETOOTH_DATA_TYPE_FLAGS;
+    out[i++] = 0x06;
+    out[i++] = 0x12;       // length: 1 (type) + 16 (UUID) + 1 (version) = 18
+    out[i++] = BLUETOOTH_DATA_TYPE_SERVICE_DATA_128_BIT_UUID;
+    memcpy(&out[i], uuid_le, 16);
+    i += 16;
+    out[i++] = g_manifest_version;
+    return i;
+}
+
+static void apply_adv_data(void) {
+    static uint8_t adv_buf[31];
+    size_t adv_len = build_adv_data(adv_buf);
+    gap_advertisements_set_data((uint8_t)adv_len, adv_buf);
+}
+
 static void start_advertising_internal(void) {
     uint16_t adv_int_min = 0x00A0;      // 100ms (units of 0.625ms)
     uint16_t adv_int_max = 0x00A0;
     uint8_t  adv_type      = 0;           // Connectable undirected (ADV_IND)
     bd_addr_t null_addr    = { 0 };
-
-      // Advertising packet: flags + complete list of 128-bit service UUIDs.
-      // 128-bit UUIDs go on the wire LITTLE-ENDIAN, so CE575800-494E-4700-
-      // 8000-00805F9B34FB is emitted LSB-first as the 16 bytes below. The
-      // UUID block's length byte is 0x11 (1 type byte + 16 UUID bytes).
-    static const uint8_t adv_data[] = {
-          0x02, BLUETOOTH_DATA_TYPE_FLAGS, 0x06,
-          0x11, BLUETOOTH_DATA_TYPE_COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
-          0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
-          0x00, 0x47, 0x4e, 0x49, 0x00, 0x58, 0x57, 0xce,
-      };
 
       // Scan response: complete local name (e.g. "WX:AABBCCDD").
       // Max AD payload is 31 bytes; 2 bytes go to length+type headers.
@@ -476,11 +511,13 @@ static void start_advertising_internal(void) {
 
     gap_advertisements_set_params(adv_int_min, adv_int_max, adv_type, 0,
                                   null_addr, 0x07, 0x00);
-    gap_advertisements_set_data(sizeof(adv_data), (uint8_t *)adv_data);
+    apply_adv_data();
     gap_scan_response_set_data(scan_rsp_len, scan_rsp);
     gap_advertisements_enable(1);
+    g_advertising_started = true;
 
-    printf("[ble] advertising started (name=%s)\r\n", g_node_name);
+    printf("[ble] advertising started (name=%s, manifest_version=%u)\r\n",
+           g_node_name, (unsigned)g_manifest_version);
 }
 
 // ============================================================
@@ -605,4 +642,15 @@ void ble_set_on_disconnect(ble_on_disconnect_cb cb) {
 
 void ble_set_on_write(ble_on_write_cb cb) {
     g_on_write_cb = cb;
+}
+
+void ble_set_manifest_version(uint8_t version) {
+    if (version == g_manifest_version) return;
+    g_manifest_version = version;
+    if (g_advertising_started) {
+        // Push the updated payload to the controller. BTstack accepts
+        // gap_advertisements_set_data while advertising is active —
+        // the next advertisement frame on the air carries the new byte.
+        apply_adv_data();
+    }
 }

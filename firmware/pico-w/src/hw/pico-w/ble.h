@@ -60,6 +60,13 @@ void ble_start_advertising(void);
 // Stop advertising.
 void ble_stop_advertising(void);
 
+// Update the 1-byte manifest_version we advertise in the service-data
+// block. Cheap to call — pushes a fresh AD payload to the controller
+// without touching scan response or restarting advertising. Safe to
+// call before advertising has started; the value will take effect at
+// the first start_advertising_internal().
+void ble_set_manifest_version(uint8_t version);
+
 // Process BLE events (btstack is IRQ-driven but kept for API compatibility).
 void ble_process(void);
 
