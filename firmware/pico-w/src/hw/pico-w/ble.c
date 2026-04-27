@@ -260,9 +260,6 @@ static int att_write_cb(hci_con_handle_t conn_handle, uint16_t att_handle,
                         uint16_t transaction_mode, uint16_t offset,
                         uint8_t *buffer, uint16_t buffer_size) {
     (void)conn_handle;
-    printf("[ble] att_write_cb: handle=0x%04x mode=%u off=%u len=%u\r\n",
-           (unsigned)att_handle, (unsigned)transaction_mode,
-           (unsigned)offset, (unsigned)buffer_size);
 
     switch (att_handle) {
         case ATT_CHARACTERISTIC_CE57580E_494E_4700_8000_00805F9B34FB_01_CLIENT_CONFIGURATION_HANDLE:
@@ -270,9 +267,6 @@ static int att_write_cb(hci_con_handle_t conn_handle, uint16_t att_handle,
             if (buffer_size == 2) {
                 g_notif_enabled = (little_endian_read_16(buffer, 0) ==
                         GATT_CLIENT_CHARACTERISTICS_CONFIGURATION_NOTIFICATION);
-                printf("[ble] CCCD write: notif_enabled=%d (raw=0x%04x)\r\n",
-                       (int)g_notif_enabled,
-                       (unsigned)little_endian_read_16(buffer, 0));
             }
             break;
 

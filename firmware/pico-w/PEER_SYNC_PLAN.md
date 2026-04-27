@@ -1,9 +1,10 @@
 # Phase 3 Plan — Pico ↔ Pico Peer Sync
 
-**Status:** draft, pre-implementation
-**Goal:** Two Waxwing nodes, powered on within BLE range of each other, automatically discover one another and pull every file the other has into their own `/files/` until the receiver runs out of room. No phone required, no human in the loop, no review gate yet.
+**Status:** **shipped 2026-04-27.** Two nodes on a desk discover each other, sync files in one direction per session, and converge across many sessions. Confirmed end-to-end: empty node pulled an image from a populated node; companion-pushed file propagated to the other node within seconds of disconnect.
 
-This document is the working plan: the design, the open questions I want your call on, the file-by-file changes, and the unit-test list to write in parallel.
+**Goal (original):** Two Waxwing nodes, powered on within BLE range of each other, automatically discover one another and pull every file the other has into their own `/files/` until the receiver runs out of room. No phone required, no human in the loop, no review gate yet.
+
+This document is the working plan plus, at the bottom, the lessons learned from bringing it up on hardware and the open follow-ups.
 
 ---
 
@@ -505,3 +506,44 @@ These should be drafted alongside (preferably *before*) the implementation that 
 7. **Backoff:** 10 min after a clean sync, 30 s after a failed one, ±20 % jitter on both. Manifest counter optimises the typical case; backoff is the correctness floor.
 
 When you're ready to kick off, my first commit will be step 1 of §5 (`manifest_counter` + tests). One byte, one module, all host-side, ~150 lines including tests. Lands the persistence pattern we'll reuse for `peer_table`'s eventual flash-backed variant, and doesn't touch any of the BLE wiring yet. Each subsequent commit follows the order in §5.
+
+---
+
+## 10. Shipped notes (added 2026-04-27)
+
+### Lessons from hardware bring-up
+
+- **`gatt_client_write_value_of_characteristic_without_response` silently no-ops** when the target characteristic doesn't declare `WRITE_WITHOUT_RESPONSE` (ATT property bit 0x04). The btstack call returns success and the responder's `att_write_cb` is never invoked. The original GATT db only declared `WRITE` (0x08, Write Request), which works for iOS (`.withResponse`) but loses every Pico-to-Pico command. Fix was a one-line GATT-db change adding `WRITE_WITHOUT_RESPONSE`. **Generalisable lesson:** for any new characteristic that more than one client type will write to, declare both write properties unless there's a deliberate reason not to.
+- **`HCI_EVENT_DISCONNECTION_COMPLETE` fires on every connection ending**, not just inbound ones. The peripheral path's existing handler had to grow a `conn_handle != g_conn_handle` guard so that an outbound peer-sync disconnect didn't spuriously fire the peripheral's on_disconnect callback and re-enable advertising at the wrong moment.
+- **`HCI_SUBEVENT_LE_CONNECTION_COMPLETE` does the same.** Both peripheral and client packet handlers register for it; both must filter on `role` (SLAVE for peripheral, MASTER for client) so the events partition cleanly.
+- **`MAX_NR_HCI_CONNECTIONS=1` rejects the second connect**, even when by construction we never use both at once (mesh_state never enters SCANNING while CONNECTED). The controller pre-validates against the cap. Bumping to 2 is mandatory for the dual-role build.
+- **Diagnostics paid for themselves twice.** First time: confirmed CCCD enable was working and ruled out a notification-side bug. Second time: showed `status=0x00` on the write but no `att_write_cb`, which is what cracked open the WRITE_WITHOUT_RESPONSE diagnosis. Worth keeping the failure-path prints (DROPPED, send-failed, peer_sync_start refused) permanently.
+
+### Behaviour observed in soak
+
+- Empty node + populated node, both flashed: discovery → connect → sync of one image → disconnect → both back to mesh-mode alternation, well within sub-30-second wall time.
+- Companion-pushed image to one node propagated to the other on the next encounter without intervention. Manifest counter byte changed in the advert, peer table's "version mismatch" path triggered a fresh sync, file landed.
+- Two nodes that have caught up to each other go quiet for the duration of the success backoff window. No handshake spam.
+
+### Open follow-ups, in priority order
+
+1. **Hash-based dedup.** Filename-based works but renames re-pull. The 8-byte truncated SHA-256 is already in `ls` responses; receiver-side compute over `/files/` and compare. Small change, mostly tests.
+2. **Onboarding / owner pairing.** *No-one is the owner of a node yet* — any companion app can connect and do anything. Today this is great for debugging but it's an obvious problem for production: an attacker with their own companion app within BLE range gets the same access as the owner. We need a first-contact ceremony where one companion becomes the node's "owner" and subsequent companions either get read-only access or are rejected. Sketch:
+    - **First companion to connect to a never-paired node performs an owner-pairing handshake.** Probably looks like a one-shot challenge-response: companion presents a public key, node stores it, future commands are authenticated against that key.
+    - **Persisted owner key lives at `/system/owner.bin`** (the same `fs_system_*` namespace we already built for identity and the manifest counter — there's a pattern emerging for this).
+    - **Mode and configuration commands** (attended ↔ unattended, WiFi creds, subscriptions, social-feature opt-ins) are gated to the owner. Future-tense for now since these commands don't exist yet, but they're coming with the social layer.
+    - **Read-only / observer access for non-owner companions** — letting visitors browse content and rate things they consume but not reconfigure the node. Probably a different GATT characteristic surface or a flag in the existing commands.
+    - **Owner-key rotation / factory reset:** wipe `/system/owner.bin` (and maybe `/system/identity.bin` if we want a full clean slate) via a physical button or a tooling escape hatch. Need a rule for what happens if the user loses their phone — recovery from the identity mnemonic, mirroring the content-identity story?
+    - **Social/gamification features should ride this same gate.** Sync map, encounter ledger, peer graph, milestone badges — visible to the owner only. Public observers see only what's been deliberately shared.
+3. **Encounter ledger (opt-in).** Phase 4 prerequisite for the social layer in `protocol/GAMIFICATION.md`. Needs the owner gate from #2 to be meaningful.
+4. **Companion-side mesh visibility.** "Last sync N min ago, peer X, gained Y files" surface. Better after #3 lands.
+5. **WiFi upgrade.** Big speedup for image-heavy syncs. Hold until BLE-only mesh has earned more soak time.
+
+### Diagnostic prints to retire
+
+The `5ad761a` and `9f08930` debug commits added a lot of tracing that earned its keep but is now noisy in normal operation. Worth keeping permanently:
+- `[ble] response DROPPED: …` — only fires on real malfunction
+- `[ble_client] write failed: status=0x…` — same
+- `[mesh] peer_sync_start refused …`, `[mesh] send_command failed …`, `[mesh] sync done|error` — the session-level event log
+
+The chatty per-response and per-write traces (`att_write_cb` byte dump, `on_file_command` triplet, `peer_sync_start ok, sending …`) should come out. Cleanup commit landing alongside the "shipped" marker on this plan.

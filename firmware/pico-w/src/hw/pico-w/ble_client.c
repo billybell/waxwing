@@ -146,7 +146,7 @@ bool ble_client_connect(const uint8_t bd_addr[6], uint8_t bd_addr_type) {
 bool ble_client_send_command(const uint8_t *data, size_t len) {
     if (g_client.state != CLIENT_READY ||
         g_client.conn_handle == HCI_CON_HANDLE_INVALID) {
-        printf("[ble_client] send_command: not ready (state=%d handle=0x%04x)\r\n",
+        printf("[ble_client] send refused: state=%d handle=0x%04x\r\n",
                (int)g_client.state, g_client.conn_handle);
         return false;
     }
@@ -154,9 +154,8 @@ bool ble_client_send_command(const uint8_t *data, size_t len) {
         g_client.conn_handle,
         g_client.char_cmd.value_handle,
         (uint16_t)len, (uint8_t *)data);
-    printf("[ble_client] write %zu bytes to handle=0x%04x → status=0x%02x\r\n",
-           len, (unsigned)g_client.char_cmd.value_handle, status);
     if (status != ERROR_CODE_SUCCESS) {
+        printf("[ble_client] write failed: status=0x%02x\r\n", status);
         return false;
     }
     return true;
@@ -359,11 +358,6 @@ static void gatt_client_event_handler(uint8_t packet_type, uint16_t channel,
                         ble_client_disconnect();
                         break;
                     }
-                    printf("[ble_client] chars: cmd_value=0x%04x "
-                           "resp_value=0x%04x resp_cccd=0x%04x\r\n",
-                           (unsigned)g_client.char_cmd.value_handle,
-                           (unsigned)g_client.char_resp.value_handle,
-                           (unsigned)g_client.char_resp.end_handle);
                     g_client.state = CLIENT_SUBSCRIBING;
                     gatt_client_listen_for_characteristic_value_updates(
                         &g_client.notif_listener,

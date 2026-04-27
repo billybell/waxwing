@@ -97,13 +97,9 @@ static void led_update(void) {
 static uint8_t resp_buf[512];
 
 static void on_file_command(const uint8_t *data, size_t len) {
-    printf("[main] on_file_command: %zu bytes in\r\n", len);
     int resp_len = commands_handle(data, len, resp_buf, sizeof(resp_buf));
-    printf("[main] commands_handle → %d bytes out, ble_connected=%d\r\n",
-           resp_len, (int)ble_is_connected());
     if (resp_len > 0 && ble_is_connected()) {
-        bool ok = ble_send_file_response(resp_buf, (size_t)resp_len);
-        printf("[main] ble_send_file_response → %s\r\n", ok ? "queued" : "DROPPED");
+        ble_send_file_response(resp_buf, (size_t)resp_len);
     }
     ble_set_manifest_version(manifest_counter_get());
 }
@@ -144,17 +140,15 @@ static void on_client_connected(void) {
         ble_client_disconnect();
         return;
     }
-    printf("[mesh] peer_sync_start ok, sending %zu-byte ls\r\n", out_len);
     if (!ble_client_send_command(g_sync_buf, out_len)) {
-        printf("[mesh] failed to send first command; disconnecting\r\n");
+        printf("[mesh] first send failed; disconnecting\r\n");
         ble_client_disconnect();
     }
 }
 
 static void on_client_response(const uint8_t *data, size_t len) {
-    printf("[mesh] response in: %zu bytes\r\n", len);
     if (!g_sync) {
-        printf("[mesh] WARN: response with no active session\r\n");
+        printf("[mesh] WARN: response (%zu bytes) with no active session\r\n", len);
         return;
     }
     size_t           out_len = 0;
@@ -162,8 +156,6 @@ static void on_client_response(const uint8_t *data, size_t len) {
                                                        g_sync_buf,
                                                        sizeof(g_sync_buf),
                                                        &out_len);
-    printf("[mesh] peer_sync step=%d, next_cmd_len=%zu\r\n",
-           (int)step, out_len);
     if (step == PEER_SYNC_NEED_WRITE) {
         if (!ble_client_send_command(g_sync_buf, out_len)) {
             printf("[mesh] send_command failed; disconnecting\r\n");
@@ -172,6 +164,7 @@ static void on_client_response(const uint8_t *data, size_t len) {
         return;
     }
     // DONE or ERROR — record the result and disconnect.
+    printf("[mesh] sync %s\r\n", step == PEER_SYNC_DONE ? "done" : "error");
     peer_table_record_sync(g_sync_peer_tpk, g_sync_peer_version,
                            (step == PEER_SYNC_DONE)
                                 ? PEER_SYNC_RESULT_SUCCESS
