@@ -25,14 +25,14 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
         src/hw/pico-w/diskio.c
         src/hw/pico-w/filestore_fatfs.c
         src/hw/pico-w/hal_crypto_pico.c
-        src/core/cborencode.c
-        src/core/cbor_decode.c
-        src/core/commands.c
-        src/core/identity.c
-        src/core/manifest_counter.c
-        src/core/mesh_state.c
-        src/core/peer_sync.c
-        src/core/peer_table.c
+        ../core/cborencode.c
+        ../core/cbor_decode.c
+        ../core/commands.c
+        ../core/identity.c
+        ../core/manifest_counter.c
+        ../core/mesh_state.c
+        ../core/peer_sync.c
+        ../core/peer_table.c
 
          # FatFS (local copy with custom ffconf.h).
         src/thirdparty/fatfs/ff.c
@@ -60,6 +60,9 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
      )
 
     # Add include directories
+    # ${CMAKE_CURRENT_SOURCE_DIR}/.. is firmware/ — makes #include "core/foo.h"
+    # resolve to the shared firmware/core/ tree.
+    target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
     target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/hw/pico-w)
     target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/thirdparty/fatfs)
@@ -101,34 +104,4 @@ else()
     project(waxwing C)
 endif()
 
-# ---------------------------------------------------------------------------
-# Host-only test target (not built when cross-compiling for Pico W)
-# ---------------------------------------------------------------------------
-if(NOT CMAKE_CROSSCOMPILING)
-    enable_testing()
-
-    set(TEST_SOURCES
-        src/core/cborencode.c
-        src/core/cbor_decode.c
-        src/core/commands.c
-        src/core/identity.c
-        src/core/manifest_counter.c
-        src/core/mesh_state.c
-        src/core/peer_sync.c
-        src/core/peer_table.c
-        tests/test_runner.c
-        tests/test_commands.c
-        tests/test_identity.c
-        tests/test_manifest_counter.c
-        tests/test_mesh_state.c
-        tests/test_peer_sync.c
-        tests/test_peer_table.c
-        tests/mock_filestore.c
-        tests/stub_ble.c
-        tests/stub_hal_crypto.c
-     )
-
-    add_executable(waxwing_test ${TEST_SOURCES})
-    target_include_directories(waxwing_test PRIVATE src tests)
-    add_test(NAME commands COMMAND waxwing_test)
-endif()
+# Host-only tests live in firmware/core/ — see firmware/core/CMakeLists.txt.

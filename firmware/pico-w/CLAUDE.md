@@ -21,13 +21,16 @@ Output: `build/waxwing_mesh.uf2` (Pico W BOOTSEL flash target)
 
 ## Directory structure
 
+Portable code and host tests live one level up in `firmware/core/`,
+shared by every firmware target. Pico-W-specific bits stay here:
+
 ```
-src/core/        — platform-independent business logic (CBOR, commands,
+../core/         — platform-independent business logic (CBOR, commands,
                    identity, filestore interface, hal_crypto interface)
+../core/tests/   — host-only unit tests + RAM-backed mocks
 src/hw/pico-w/   — Pico W port (main, BLE, FatFS-on-flash filestore,
                    diskio, hal_crypto implementation)
 src/thirdparty/  — vendored FatFS and monocypher
-tests/           — host-only unit tests + RAM-backed mocks
 ```
 
 ## On-device storage layout
