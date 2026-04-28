@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Dispatch a CBOR file command. Parses incoming CBOR map, calls filestore,
  * and encodes response into out_buf.
@@ -12,5 +16,9 @@
  */
 int commands_handle(const uint8_t *cmd_data, size_t cmd_len,
                     uint8_t *out_buf, size_t out_max);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // WAXWING_COMMANDS_H

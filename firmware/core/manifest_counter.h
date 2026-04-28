@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Manifest counter: a 1-byte hint advertised in BLE service-data so peer
  * scanners can decide whether a previously-synced node has anything new
@@ -59,5 +63,9 @@ uint8_t manifest_counter_bump(void);
  * Read the current cached counter value. Cheap; never touches flash.
  */
 uint8_t manifest_counter_get(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // WAXWING_MANIFEST_COUNTER_H

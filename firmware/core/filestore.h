@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Max length for file names used in API calls (excluding /files/ prefix). */
 #define FS_MAX_NAME_LEN 32
 
@@ -160,5 +164,9 @@ int fs_system_write(const char *name, const uint8_t *data, size_t len);
 
 /** Delete a system blob. Returns 0 on success, -1 if not found or error. */
 int fs_system_delete(const char *name);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // WAXWING_FILESTORE_H

@@ -5,6 +5,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // CBOR major types we understand.
 typedef enum {
     CBOR_TYPE_UINT  = 0,
@@ -50,5 +54,9 @@ bool cbor_map_get_text(const uint8_t *map_data, const uint8_t *end,
 bool cbor_map_get_bytes(const uint8_t *map_data, const uint8_t *end,
                         uint64_t pair_count, const char *key,
                         const uint8_t **out_ptr, size_t *out_len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // WAXWING_CBOR_DECODE_H

@@ -72,21 +72,25 @@ FileCommandCallbacks  g_file_cmd_cbs;
 void publish_advertising_payload() {
     if (!g_advertising) return;
 
+    // BLE 4 advertising and scan-response packets are each capped at 31
+    // bytes. With a 128-bit (16-byte) service UUID, putting both the
+    // complete-services list AND service-data in the primary AD pushes
+    // it over the limit (3 + 18 + 19 = 40). Split:
+    //   primary AD     = flags(3) + service-data(19) = 22 bytes
+    //   scan response  = name(9)  + complete-services(18) = 27 bytes
+    // The service UUID is still discoverable because service-data
+    // names it; the explicit list in the scan response is for scanners
+    // that filter by complete-services AD type.
     NimBLEAdvertisementData adv;
     adv.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
-    adv.setCompleteServices(NimBLEUUID(WAXWING_SERVICE_UUID));
-
-    // Service-data: 1-byte manifest version, matching the Pico W
-    // advertising payload so peers can detect content changes
-    // without connecting.
     std::string service_data;
     service_data.push_back(static_cast<char>(g_manifest_version));
     adv.setServiceData(NimBLEUUID(WAXWING_SERVICE_UUID), service_data);
-
     g_advertising->setAdvertisementData(adv);
 
     NimBLEAdvertisementData scan_resp;
     scan_resp.setName("Waxwing");
+    scan_resp.setCompleteServices(NimBLEUUID(WAXWING_SERVICE_UUID));
     g_advertising->setScanResponseData(scan_resp);
 }
 
