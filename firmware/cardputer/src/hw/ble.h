@@ -28,6 +28,10 @@ extern "C" {
 bool     ble_init(void);
 void     ble_set_identity_raw(const uint8_t *data, size_t len);
 void     ble_set_manifest_version(uint8_t version);
+// Update the name advertised in the scan response. Safe to call
+// before or after advertising starts; takes effect at the next
+// advertising data publish.
+void     ble_set_node_name(const char *name);
 void     ble_start_advertising(void);
 void     ble_stop_advertising(void);
 void     ble_process(void);

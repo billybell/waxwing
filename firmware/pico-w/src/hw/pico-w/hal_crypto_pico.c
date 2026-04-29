@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "pico/rand.h"
-#include "thirdparty/monocypher/monocypher-ed25519.h"
+#include "core/thirdparty/monocypher/monocypher-ed25519.h"
 
 bool hal_random_bytes(uint8_t *out, size_t n) {
     while (n >= 4) {

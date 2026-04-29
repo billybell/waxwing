@@ -30,6 +30,7 @@ The ESP32-S3 provides BLE 5.0 and WiFi. The built-in display makes the CardPuter
 0. [x] Hello-world bring-up (PlatformIO + display)
 1. [x] BLE GATT server
 2. [x] SD card file storage (single-shot + chunked, /files + /system, .meta sidecars)
+3. [x] Transport Identity (Ed25519 via monocypher, persisted on SD `/system/identity.bin`)
 2. [ ] SD card file storage
 3. [ ] Transport Identity keypair (stored in NVS flash)
 4. [ ] Manifest exchange

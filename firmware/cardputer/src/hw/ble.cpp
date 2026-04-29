@@ -19,6 +19,7 @@ constexpr size_t   kIdentityMaxLen       = BLE_MAX_DATA_SIZE;
 uint8_t g_identity[kIdentityMaxLen];
 size_t  g_identity_len = 0;
 uint8_t g_manifest_version = 0;
+char    g_node_name[16] = "Waxwing";
 
 NimBLEServer*         g_server          = nullptr;
 NimBLEService*        g_service         = nullptr;
@@ -89,7 +90,7 @@ void publish_advertising_payload() {
     g_advertising->setAdvertisementData(adv);
 
     NimBLEAdvertisementData scan_resp;
-    scan_resp.setName("Waxwing");
+    scan_resp.setName(g_node_name);
     scan_resp.setCompleteServices(NimBLEUUID(WAXWING_SERVICE_UUID));
     g_advertising->setScanResponseData(scan_resp);
 }
@@ -138,6 +139,13 @@ void ble_set_identity_raw(const uint8_t* data, size_t len) {
 void ble_set_manifest_version(uint8_t version) {
     if (version == g_manifest_version) return;
     g_manifest_version = version;
+    publish_advertising_payload();
+}
+
+void ble_set_node_name(const char *name) {
+    if (!name || !*name) return;
+    std::strncpy(g_node_name, name, sizeof(g_node_name) - 1);
+    g_node_name[sizeof(g_node_name) - 1] = '\0';
     publish_advertising_payload();
 }
 

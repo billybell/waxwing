@@ -6,6 +6,7 @@ extern "C" {
 #include "core/cborencode.h"
 #include "core/commands.h"
 #include "core/filestore.h"
+#include "core/identity.h"
 #include "core/manifest_counter.h"
 }
 
@@ -26,6 +27,9 @@ bool     g_sd_ready         = false;
 
 uint8_t g_resp_buf[512];
 
+waxwing_identity_t g_identity;
+bool               g_identity_ready = false;
+
 // Inbound File Command writes are queued and processed in loop()
 // rather than synchronously inside the NimBLE host-task callback.
 // Doing CBOR + filestore + SD work on the host task's 4 KB stack
@@ -38,17 +42,13 @@ struct CmdEntry {
 constexpr size_t kCmdQueueDepth = 4;
 QueueHandle_t g_cmd_queue = nullptr;
 
-void seed_stub_identity() {
+void publish_identity() {
+    if (!g_identity_ready) return;
+
     // CBOR identity map matching the Pico W wire format (see
     // firmware/pico-w/src/hw/pico-w/ble.c::build_identity_from_struct
-    // and firmware/pico-w/CLAUDE.md). The TPK bytes are still a
-    // step-3 stub — replaced by a real Ed25519 public key once the
-    // NVS-backed identity store lands. iOS validates the map shape,
-    // so encoding has to be right even with a placeholder key.
-    uint8_t tpk[32];
-    for (size_t i = 0; i < sizeof(tpk); ++i) {
-        tpk[i] = static_cast<uint8_t>(0xC0 + i);
-    }
+    // and firmware/pico-w/CLAUDE.md).
+    const uint8_t *tpk = g_identity.pub;
 
     uint8_t buf[BLE_MAX_DATA_SIZE];
     size_t  pos = 0;
@@ -61,11 +61,12 @@ void seed_stub_identity() {
     pos += cborencode_text_str(buf + pos, "v", 1);
     pos += cborencode_uint(buf + pos, 0);
 
+    const size_t name_len = std::strlen(g_identity.node_name);
     pos += cborencode_text_str(buf + pos, "name", 4);
-    pos += cborencode_text_str(buf + pos, "cardputer", 9);
+    pos += cborencode_text_str(buf + pos, g_identity.node_name, name_len);
 
     pos += cborencode_text_str(buf + pos, "tpk", 3);
-    pos += cborencode_byte_str(buf + pos, tpk, sizeof(tpk));
+    pos += cborencode_byte_str(buf + pos, tpk, 32);
 
     pos += cborencode_text_str(buf + pos, "caps", 4);
     pos += cborencode_uint(buf + pos, 0);
@@ -129,7 +130,7 @@ void render_status() {
     d.setTextColor(WHITE, BLACK);
     d.setTextDatum(top_left);
     d.setTextSize(2);
-    d.drawString("Waxwing", 6, 6);
+    d.drawString(g_identity_ready ? g_identity.node_name : "Waxwing", 6, 6);
 
     char line[32];
 
@@ -173,6 +174,7 @@ void setup() {
     g_sd_ready = (fs_init() == 0);
     if (g_sd_ready) {
         manifest_counter_init();
+        g_identity_ready = waxwing_identity_load_or_generate(&g_identity);
     }
 
     if (!ble_init()) {
@@ -186,7 +188,10 @@ void setup() {
     ble_set_on_disconnect(on_disconnect);
     ble_set_on_write(on_file_command);
 
-    seed_stub_identity();
+    if (g_identity_ready) {
+        ble_set_node_name(g_identity.node_name);
+        publish_identity();
+    }
     ble_set_manifest_version(manifest_counter_get());
     ble_start_advertising();
     render_status();

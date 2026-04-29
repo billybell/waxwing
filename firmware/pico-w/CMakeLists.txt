@@ -42,8 +42,10 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
          # Monocypher: standard Ed25519 (RFC 8032, curve25519 + SHA-512)
          # used by hal_crypto_pico.c. monocypher-ed25519.c re-uses
          # primitives from monocypher.c — both files required.
-        src/thirdparty/monocypher/monocypher.c
-        src/thirdparty/monocypher/monocypher-ed25519.c
+         # Lives in firmware/core/thirdparty/ so the CardPuter port
+         # can use the same code; firmware/ is on the include path.
+        ../core/thirdparty/monocypher/monocypher.c
+        ../core/thirdparty/monocypher/monocypher-ed25519.c
      )
 
     # Create the executable

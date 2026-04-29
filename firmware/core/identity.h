@@ -6,6 +6,10 @@
 #include <stddef.h>
 #include "core/constants.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Identity record on storage:
 //   magic[4] = 'W','X','I','D'
 //   version  = 1
@@ -43,5 +47,9 @@ void waxwing_identity_bytes_to_hex(const uint8_t *bytes, size_t len,
                                    char *hex_out);
 void waxwing_identity_tpk_to_base64url(const uint8_t *pub_key,
                                        char *b64url_out);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // WAXWING_IDENTITY_H
