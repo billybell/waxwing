@@ -188,7 +188,7 @@ extern "C" int fs_write(const char *name, const uint8_t *data, size_t len) {
     char path[64];
     if (!build_path(kFilesDir, name, path, sizeof(path))) return -1;
 
-    File f = SD.open(path, FILE_WRITE);
+    File f = SD.open(path, FILE_WRITE, /*create=*/true);
     if (!f) return -1;
     size_t bw = f.write(data, len);
     f.flush();
@@ -216,7 +216,7 @@ extern "C" int fs_chunked_start(const char *name, uint32_t total_size) {
     char path[64];
     if (!build_path(kFilesDir, name, path, sizeof(path))) return -1;
 
-    File f = SD.open(path, FILE_WRITE);
+    File f = SD.open(path, FILE_WRITE, /*create=*/true);
     if (!f) return -1;
     g_chunk.file = f;
     std::strncpy(g_chunk.name, name, FS_MAX_NAME_LEN - 1);
@@ -362,7 +362,7 @@ extern "C" int fs_write_meta(const char *name, const uint8_t *data, size_t len) 
     if (!g_mounted) return -1;
     char meta[64];
     if (!build_path(kFilesDir, name, meta, sizeof(meta), kMetaSuffix)) return -1;
-    File f = SD.open(meta, FILE_WRITE);
+    File f = SD.open(meta, FILE_WRITE, /*create=*/true);
     if (!f) return -1;
     size_t bw = f.write(data, len);
     f.flush();
@@ -400,7 +400,7 @@ extern "C" int fs_system_write(const char *name, const uint8_t *data, size_t len
     if (!g_mounted) return -1;
     char path[64];
     if (!build_path(kSystemDir, name, path, sizeof(path))) return -1;
-    File f = SD.open(path, FILE_WRITE);
+    File f = SD.open(path, FILE_WRITE, /*create=*/true);
     if (!f) return -1;
     size_t bw = f.write(data, len);
     f.flush();

@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Peer seen-table: a small RAM-only LRU of nodes we've recently
  * encountered, keyed by a prefix of the peer's transport public key.
@@ -74,5 +78,9 @@ void peer_table_record_sync(const uint8_t *tpk_prefix,
 
 /* Number of entries currently held. Useful in tests. */
 int peer_table_size(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // WAXWING_PEER_TABLE_H

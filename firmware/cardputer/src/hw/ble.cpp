@@ -38,8 +38,8 @@ ble_on_write_cb      g_cb_write      = nullptr;
 
 class ServerCallbacks final : public NimBLEServerCallbacks {
 public:
-    void onConnect(NimBLEServer* /*server*/, ble_gap_conn_desc* desc) override {
-        g_conn_handle = desc->conn_handle;
+    void onConnect(NimBLEServer* /*server*/, NimBLEConnInfo& info) override {
+        g_conn_handle = info.getConnHandle();
         g_connected   = true;
         g_advertising_active = false;
         if (g_cb_connect) {
@@ -47,8 +47,9 @@ public:
         }
     }
 
-    void onDisconnect(NimBLEServer* /*server*/, ble_gap_conn_desc* desc) override {
-        const uint16_t handle = desc->conn_handle;
+    void onDisconnect(NimBLEServer* /*server*/, NimBLEConnInfo& info,
+                      int /*reason*/) override {
+        const uint16_t handle = info.getConnHandle();
         g_connected   = false;
         g_conn_handle = 0xFFFF;
         if (g_cb_disconnect) {
@@ -59,7 +60,8 @@ public:
 
 class FileCommandCallbacks final : public NimBLECharacteristicCallbacks {
 public:
-    void onWrite(NimBLECharacteristic* chr) override {
+    void onWrite(NimBLECharacteristic* chr,
+                 NimBLEConnInfo& /*info*/) override {
         const std::string value = chr->getValue();
         if (g_cb_write) {
             g_cb_write(reinterpret_cast<const uint8_t*>(value.data()), value.size());
@@ -100,6 +102,21 @@ void publish_advertising_payload() {
 bool ble_init(void) {
     NimBLEDevice::init("Waxwing");
     NimBLEDevice::setMTU(247);
+
+    // Stick with NimBLE's default own address type (random
+    // non-resolvable). Forcing BLE_OWN_ADDR_PUBLIC was causing
+    // status=13 on central connect: NimBLEDevice::init does not
+    // automatically load the chip's factory MAC into the host
+    // stack's identity, so the LE Create Connection HCI command
+    // referenced an address the controller never had configured
+    // and was rejected. Random address is fine for our use —
+    // peer identity is established via the Ed25519 TPK at the
+    // protocol layer, not the BLE address.
+    // No pairing / no MITM / no bonding. Waxwing peer-sync is
+    // unauthenticated at the BLE layer (auth lives in the protocol).
+    // Default security can attempt SMP exchange mid-connect and break
+    // the central handshake.
+    NimBLEDevice::setSecurityAuth(false, false, false);
 
     g_server = NimBLEDevice::createServer();
     g_server->setCallbacks(&g_server_cbs);

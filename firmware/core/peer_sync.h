@@ -5,6 +5,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Peer sync session state machine. Pulls every file the peer has into
  * the local /files/ that we don't already have, plus their .meta
@@ -88,5 +92,9 @@ peer_sync_step_t peer_sync_handle_response(peer_sync_session_t *s,
  * Idempotent — calling twice is safe.
  */
 void peer_sync_end(peer_sync_session_t *s);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // WAXWING_PEER_SYNC_H

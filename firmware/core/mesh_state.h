@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Mesh-mode state machine: drives the advertise / scan alternation.
  *
@@ -80,5 +84,9 @@ void mesh_state_on_connected(uint32_t now_ms);
 void mesh_state_on_disconnected(uint32_t now_ms);
 
 mesh_phase_t mesh_state_phase(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // WAXWING_MESH_STATE_H
