@@ -239,7 +239,7 @@ struct NodeSettingsView: View {
     private func meshSection(_ identity: DeviceIdentity) -> some View {
         Section {
             HStack {
-                Label("Manifest Items", systemImage: "doc.on.doc")
+                Label("Manifest Version", systemImage: "number")
                 Spacer()
                 Text("\(identity.manifestCount)")
                     .foregroundStyle(.secondary)
@@ -258,6 +258,8 @@ struct NodeSettingsView: View {
             }
         } header: {
             Text("Mesh Status")
+        } footer: {
+            Text("Manifest version is a counter that bumps once per file mutation (write or delete). Peers compare it to decide when to re-pull. Wraps at 256.")
         }
     }
 

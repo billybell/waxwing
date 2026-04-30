@@ -11,6 +11,7 @@ struct PhotoUploadView: View {
 
     // Photo picker state
     @State private var selectedItem: PhotosPickerItem?
+    @State private var showingPhotoPicker = false
     @State private var selectedImageData: Data?
     @State private var previewImage: UIImage?
     /// Cached size of `selectedImageData` so the view never re-encodes JPEG
@@ -111,6 +112,9 @@ struct PhotoUploadView: View {
                     }
                 }
             }
+            .photosPicker(isPresented: $showingPhotoPicker,
+                          selection: $selectedItem,
+                          matching: .images)
             .fullScreenCover(isPresented: $showingCamera) {
                 CameraView(image: $cameraImage)
                     .ignoresSafeArea()
@@ -123,7 +127,9 @@ struct PhotoUploadView: View {
 
     private var imageSourceSection: some View {
         Section {
-            PhotosPicker(selection: $selectedItem, matching: .images) {
+            Button {
+                showingPhotoPicker = true
+            } label: {
                 Label("Choose from Library", systemImage: "photo.on.rectangle")
             }
 

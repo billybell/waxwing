@@ -1,6 +1,7 @@
 import Foundation
 import CoreBluetooth
 import Combine
+import CryptoKit
 
 // MARK: - Discovered Waxwing Node
 
@@ -100,6 +101,24 @@ struct NodeFile: Identifiable, Equatable {
     var hashHex: String? {
         guard let hash = hash else { return nil }
         return hash.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Stable disk-cache key for this file. Prefers the manifest's content
+    /// hash when the firmware actually computes one; falls back to a hash
+    /// of name+size when the manifest carries no hash (or all zeros, which
+    /// is what current Pico W / CardPuter firmware emits as a placeholder).
+    /// The fallback invalidates correctly on size change but not on
+    /// in-place rewrites of the same size — acceptable until firmware
+    /// fills in a real SHA-256 prefix.
+    var cacheKey: String {
+        if let hex = hashHex, hex != "0000000000000000" {
+            return hex
+        }
+        let fallback = "\(name)|\(size)"
+        let digest = SHA256.hash(data: Data(fallback.utf8))
+        return digest.prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     /// Human-readable file size

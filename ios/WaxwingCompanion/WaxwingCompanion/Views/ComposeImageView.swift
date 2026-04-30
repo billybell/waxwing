@@ -13,6 +13,7 @@ struct ComposeImageView: View {
     // full-resolution UIImage as soon as the 128×128 PreparedSource is
     // available, so slider tweaks don't pin the original photo in memory.
     @State private var selectedItem: PhotosPickerItem?
+    @State private var showingPhotoPicker = false
     @State private var showingCamera = false
     @State private var cameraImage: UIImage?
     @State private var preparedSource: PreparedSource?
@@ -121,6 +122,9 @@ struct ComposeImageView: View {
             .fullScreenCover(isPresented: $showingCamera) {
                 CameraView(image: $cameraImage).ignoresSafeArea()
             }
+            .photosPicker(isPresented: $showingPhotoPicker,
+                          selection: $selectedItem,
+                          matching: .images)
             .interactiveDismissDisabled(isUploading)
             .alert("Upload failed", isPresented: errorAlertPresented) {
                 Button("OK") { errorMessage = nil }
@@ -156,7 +160,9 @@ struct ComposeImageView: View {
                         .foregroundStyle(.secondary)
 
                     HStack(spacing: 12) {
-                        PhotosPicker(selection: $selectedItem, matching: .images) {
+                        Button {
+                            showingPhotoPicker = true
+                        } label: {
                             Label("Library", systemImage: "photo.on.rectangle")
                                 .font(.subheadline.weight(.medium))
                                 .frame(maxWidth: .infinity)
@@ -177,7 +183,9 @@ struct ComposeImageView: View {
             } else {
                 // Image loaded — small change-photo row
                 HStack {
-                    PhotosPicker(selection: $selectedItem, matching: .images) {
+                    Button {
+                        showingPhotoPicker = true
+                    } label: {
                         Label("Change Photo", systemImage: "arrow.triangle.2.circlepath")
                             .font(.caption)
                     }

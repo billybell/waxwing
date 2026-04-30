@@ -76,7 +76,7 @@ struct OnboardingView: View {
                 .foregroundStyle(.blue)
             Text("Welcome to Waxwing")
                 .font(.largeTitle.bold())
-            Text("A pocket companion for the Waxwing mesh. Before you start, we need to set up your identity. It will only take a minute.")
+            Text("Your companion for the Waxwing mesh. Before you start, we need to set up your identity. It will only take a minute.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
@@ -144,6 +144,7 @@ struct OnboardingView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .disabled(!BIP39.isWordlistLoaded)
 
                 Button {
@@ -153,8 +154,10 @@ struct OnboardingView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.large)
                 .disabled(!BIP39.isWordlistLoaded)
             }
+            .frame(maxWidth: 480)
             .padding(.horizontal)
 
             Spacer()
@@ -243,7 +246,9 @@ struct OnboardingView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.large)
             .disabled(!canAdvance)
+            .frame(maxWidth: 480)
             Spacer()
         }
     }

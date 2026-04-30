@@ -114,6 +114,15 @@ struct FileContentView: View {
     private func readFile() {
         bleManager.fileOperationError = nil
         self.fileData = nil
+
+        let nodeFile = bleManager.fileList.first(where: { $0.name == fileName })
+
+        // Disk cache hit — skip BLE.
+        if let nodeFile, let cached = WaxwingFileCache.shared.data(for: nodeFile) {
+            processReceived(data: cached)
+            return
+        }
+
           // If bleManager already has data, use it immediately.
         if let existing = bleManager.fileContentData {
             processReceived(data: existing)
@@ -123,6 +132,9 @@ struct FileContentView: View {
         bleManager.readFileChunked(name: fileName) { data in
                // If we're still loading (no previous data), accept the result.
             if fileData == nil {
+                if let data = data, let nodeFile {
+                    WaxwingFileCache.shared.store(data, for: nodeFile)
+                }
                 processReceived(data: data)
                 }
             }

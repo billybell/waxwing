@@ -7,6 +7,7 @@ import SwiftUI
 struct NodeDetailView: View {
     @EnvironmentObject var bleManager: BLEManager
     @ObservedObject var node: WaxwingNode
+    @Environment(\.horizontalSizeClass) private var hSize
     @State private var showingSettings = false
     @State private var showingCreateFile = false
     @State private var showingPhotoUpload = false
@@ -25,6 +26,15 @@ struct NodeDetailView: View {
     enum ViewMode: String, CaseIterable {
         case files = "Files"
         case grid = "Images"
+
+        /// Max width when shown side-by-side on regular size classes.
+        /// nil means the section flexes to fill remaining space.
+        var preferredWidthInRegular: CGFloat? {
+            switch self {
+            case .files: return 360
+            case .grid:  return nil
+            }
+        }
     }
 
     var body: some View {
@@ -34,25 +44,10 @@ struct NodeDetailView: View {
 
             // Main content area
             if node.connectionState == .ready {
-                // Segmented picker
-                Picker("View", selection: $viewMode) {
-                    ForEach(ViewMode.allCases, id: \.self) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-
-                switch viewMode {
-                case .files:
-                    fileListContent
-                case .grid:
-                    ImageGridView(
-                        imageCache: imageCache,
-                        palette: WaxwingPalettes.cedar
-                    )
-                    .environmentObject(bleManager)
+                if hSize == .regular {
+                    sideBySideContent
+                } else {
+                    segmentedContent
                 }
             } else {
                 connectingState
@@ -118,6 +113,58 @@ struct NodeDetailView: View {
             ) {
                 bleManager.listFiles()
             }
+            .environmentObject(bleManager)
+        }
+    }
+
+    // MARK: - Tabbed / Side-by-side layouts
+
+    private var segmentedContent: some View {
+        VStack(spacing: 0) {
+            Picker("View", selection: $viewMode) {
+                ForEach(ViewMode.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+
+            sectionContent(for: viewMode)
+        }
+    }
+
+    private var sideBySideContent: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(ViewMode.allCases.enumerated()), id: \.element) { index, mode in
+                if index > 0 {
+                    Divider()
+                }
+                VStack(spacing: 0) {
+                    Text(mode.rawValue)
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
+
+                    sectionContent(for: mode)
+                }
+                .frame(maxWidth: mode.preferredWidthInRegular ?? .infinity)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sectionContent(for mode: ViewMode) -> some View {
+        switch mode {
+        case .files:
+            fileListContent
+        case .grid:
+            ImageGridView(
+                imageCache: imageCache,
+                palette: WaxwingPalettes.cedar
+            )
             .environmentObject(bleManager)
         }
     }

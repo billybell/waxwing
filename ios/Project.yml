@@ -1,0 +1,25 @@
+name: WaxwingCompanion
+options:
+  bundleIdPrefix: com.waxwing
+  deploymentTarget: "17.0"
+
+settings:
+  BASE_SDK: latest
+  SWIFT_VERSION: "5.9"
+
+targets:
+  WaxwingCompanion:
+    type: application
+    platform: iOS
+    platforms:
+      ios: "17.0"
+    settings:
+      base:
+        INFOPLIST_FILE: WaxwingCompanion/WaxwingCompanion/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: "YES"
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: "NO"
+        CODE_SIGN_ENTITLEMENTS: WaxwingCompanion/WaxwingCompanion/WaxwingCompanion.entitlements
+    sources:
+        - WaxwingCompanion/WaxwingCompanion

@@ -13,6 +13,7 @@ extension String: @retroactive Identifiable {
 /// are automatically fetched from the node via chunked BLE read.
 struct ImageGridView: View {
     @EnvironmentObject var bleManager: BLEManager
+    @Environment(\.horizontalSizeClass) private var hSize
 
     /// In-memory cache of recently composed images, keyed by filename.
     /// ComposeImageView inserts here on successful upload; remote images
@@ -28,11 +29,10 @@ struct ImageGridView: View {
         bleManager.fileList.filter { isWaxwingImage($0.name) }
     }
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 6),
-        GridItem(.flexible(), spacing: 6),
-        GridItem(.flexible(), spacing: 6),
-    ]
+    private var columns: [GridItem] {
+        let minimum: CGFloat = hSize == .compact ? 110 : 180
+        return [GridItem(.adaptive(minimum: minimum, maximum: 240), spacing: 6)]
+    }
 
     var body: some View {
         Group {
@@ -174,9 +174,9 @@ struct ImageGridView: View {
                 imageCache.markFailed(name)
                 return
             }
-            // storeFromBLE persists to the content-addressed disk cache
-            // and updates the in-memory dict + caption in one shot.
-            imageCache.storeFromBLE(name: name, data: data)
+            // storeFromBLE persists to the disk cache under the file's
+            // cache key and updates the in-memory dict + caption.
+            imageCache.storeFromBLE(file: file, data: data)
         }
     }
 
@@ -322,10 +322,10 @@ class WaxwingImageCache: ObservableObject {
     func applyManifest(_ files: [NodeFile]) {
         var didLoadAny = false
         for file in files {
-            guard let hex = file.hashHex else { continue }
-            nameToHashHex[file.name] = hex
+            let key = file.cacheKey
+            nameToHashHex[file.name] = key
             if images[file.name] != nil { continue }
-            let url = diskURL(forHashHex: hex)
+            let url = diskURL(forHashHex: key)
             guard FileManager.default.fileExists(atPath: url.path),
                   let data = try? Data(contentsOf: url),
                   let img  = UIImage(data: data) else { continue }
@@ -345,48 +345,45 @@ class WaxwingImageCache: ObservableObject {
     /// Fast check used by the grid before triggering a BLE fetch.
     func hasCached(_ file: NodeFile) -> Bool {
         if images[file.name] != nil { return true }
-        if let hex = file.hashHex {
-            return FileManager.default.fileExists(atPath: diskURL(forHashHex: hex).path)
-        }
-        return false
+        return FileManager.default.fileExists(atPath: diskURL(forHashHex: file.cacheKey).path)
     }
 
     // MARK: - Stores
 
-    /// Store image bytes received from the node. Persists to the
-    /// content-addressed cache so a future reconnect can skip the
-    /// download entirely.
-    func storeFromBLE(name: String, data: Data) {
-        let hex = hashHex(of: data)
-        let url = diskURL(forHashHex: hex)
+    /// Store image bytes received from the node. Persists to disk under
+    /// the file's cache key so a future `applyManifest` finds it.
+    func storeFromBLE(file: NodeFile, data: Data) {
+        let url = diskURL(forHashHex: file.cacheKey)
         do {
             try data.write(to: url, options: .atomic)
         } catch {
             print("[cache] failed to write \(url.lastPathComponent): \(error)")
         }
-        nameToHashHex[name] = hex
+        nameToHashHex[file.name] = file.cacheKey
         if let img = UIImage(data: data) {
             let cap = PNGMetadata.extractCaption(from: data)
-            store(name: name, image: img, caption: cap)
+            store(name: file.name, image: img, caption: cap)
         } else {
-            markFailed(name)
+            markFailed(file.name)
         }
     }
 
     /// Store an image that was just composed locally and uploaded.
-    /// We have both the raw PNG bytes and the decoded UIImage.
+    /// `size` should be the byte count the manifest will report — i.e.
+    /// `data.count` — so the cache key matches what `applyManifest`
+    /// computes when the file list refreshes after upload.
     func storeLocal(name: String,
                     data: Data,
                     image: UIImage,
                     caption: String? = nil) {
-        let hex = hashHex(of: data)
-        let url = diskURL(forHashHex: hex)
+        let synthetic = NodeFile(name: name, size: data.count, hash: nil)
+        let url = diskURL(forHashHex: synthetic.cacheKey)
         do {
             try data.write(to: url, options: .atomic)
         } catch {
             print("[cache] failed to write \(url.lastPathComponent): \(error)")
         }
-        nameToHashHex[name] = hex
+        nameToHashHex[name] = synthetic.cacheKey
         store(name: name, image: image, caption: caption)
     }
 

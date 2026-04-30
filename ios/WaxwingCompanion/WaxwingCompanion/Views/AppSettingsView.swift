@@ -39,14 +39,15 @@ struct AppSettingsView: View {
                 }
             }
             .onAppear { refreshCacheStats() }
-            .alert("Clear image cache?", isPresented: $showingClearCacheConfirm) {
+            .alert("Clear cache?", isPresented: $showingClearCacheConfirm) {
                 Button("Clear", role: .destructive) {
                     WaxwingImageCache.shared.clearAll()
+                    WaxwingFileCache.shared.clearAll()
                     refreshCacheStats()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This deletes the locally cached copies of all Waxwing images. They will be re-downloaded from the node next time you view them.")
+                Text("This deletes the locally cached copies of files pulled from nodes. They will be re-downloaded next time you view them.")
             }
             .sheet(isPresented: $showingBackupSheet) {
                 MnemonicBackupView()
@@ -202,7 +203,7 @@ struct AppSettingsView: View {
                     .foregroundStyle(.teal)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Cached images")
+                    Text("Cached files")
                         .font(.body)
                     Text("\(cacheFileCount) file\(cacheFileCount == 1 ? "" : "s") · \(formatBytes(cacheBytes))")
                         .font(.caption)
@@ -213,19 +214,21 @@ struct AppSettingsView: View {
             Button(role: .destructive) {
                 showingClearCacheConfirm = true
             } label: {
-                Label("Clear image cache", systemImage: "trash")
+                Label("Clear cache", systemImage: "trash")
             }
             .disabled(cacheFileCount == 0)
         } header: {
-            Text("Image Cache")
+            Text("Cache")
         } footer: {
-            Text("Waxwing images are cached on this device by content hash, so reconnecting to a node skips re-downloading anything you already have. Clear the cache to force fresh downloads (useful for testing).")
+            Text("Files pulled from nodes are cached on this device by content hash, so reconnecting to a node skips re-downloading anything you already have. Clear the cache to force fresh downloads (useful for testing).")
         }
     }
 
     private func refreshCacheStats() {
         cacheFileCount = WaxwingImageCache.shared.diskFileCount()
+                       + WaxwingFileCache.shared.diskFileCount()
         cacheBytes     = WaxwingImageCache.shared.diskByteCount()
+                       + WaxwingFileCache.shared.diskByteCount()
     }
 
     private func formatBytes(_ bytes: Int) -> String {
