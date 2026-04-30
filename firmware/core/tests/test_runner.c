@@ -25,6 +25,12 @@ extern void test_cbor_parse_floats(void);
 extern void test_write_meta_with_doubles_roundtrip(void);
 extern void test_read_chunk_past_eof(void);
 
+extern void test_sha256_empty_string(void);
+extern void test_sha256_abc(void);
+extern void test_sha256_long_string(void);
+extern void test_sha256_streaming_matches_oneshot(void);
+extern void test_sha256_million_a(void);
+
 extern void test_identity_generate_fresh(void);
 extern void test_identity_persists_across_load(void);
 extern void test_identity_load_existing(void);
@@ -100,6 +106,12 @@ int main(void) {
     TEST_RUN(test_write_meta_with_doubles_roundtrip);
     TEST_RUN(test_read_chunk_past_eof);
 
+    TEST_RUN(test_sha256_empty_string);
+    TEST_RUN(test_sha256_abc);
+    TEST_RUN(test_sha256_long_string);
+    TEST_RUN(test_sha256_streaming_matches_oneshot);
+    TEST_RUN(test_sha256_million_a);
+
     TEST_RUN(test_identity_generate_fresh);
     TEST_RUN(test_identity_persists_across_load);
     TEST_RUN(test_identity_load_existing);
@@ -152,6 +164,6 @@ int main(void) {
     TEST_RUN(test_peer_sync_only_one_session_at_a_time);
     TEST_RUN(test_peer_sync_envelope_fits_mtu);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 68, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 73, test_failures);
     return test_failures;
 }

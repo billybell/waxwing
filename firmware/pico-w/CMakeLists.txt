@@ -46,6 +46,11 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
          # can use the same code; firmware/ is on the include path.
         ../core/thirdparty/monocypher/monocypher.c
         ../core/thirdparty/monocypher/monocypher-ed25519.c
+
+         # Vendored SHA-256 (FIPS 180-4) shared with CardPuter and host
+         # tests. Used to hash file contents at write time so manifest
+         # entries carry a real content hash.
+        ../core/thirdparty/sha256/sha256.c
      )
 
     # Create the executable

@@ -24,6 +24,7 @@ set(CORE_SOURCES
     mesh_state.c
     peer_sync.c
     peer_table.c
+    thirdparty/sha256/sha256.c
 )
 
 set(TEST_SOURCES
@@ -34,6 +35,7 @@ set(TEST_SOURCES
     tests/test_mesh_state.c
     tests/test_peer_sync.c
     tests/test_peer_table.c
+    tests/test_sha256.c
     tests/mock_filestore.c
     tests/stub_ble.c
     tests/stub_hal_crypto.c
