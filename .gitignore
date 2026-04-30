@@ -22,3 +22,15 @@ test_keys.json
 .vscode/
 .idea/
 *.swp
+
+# Claude Code
+.claude/
+
+# Build artifacts
+firmware/core/build-host/
+
+# iOS / Xcode
+ios/.build/
+ios/.swiftpm/
+ios/*.xcodeproj/
+ios/*.xcworkspace/
