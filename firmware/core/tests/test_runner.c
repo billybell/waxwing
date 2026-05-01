@@ -135,6 +135,19 @@ extern void test_attest_cache_ring_evicts_oldest(void);
 extern void test_attest_cache_dedup_after_eviction(void);
 extern void test_attest_cache_persist_across_init(void);
 
+extern void test_attest_extract_bssids_basic(void);
+extern void test_attest_extract_bssids_caps_at_max(void);
+extern void test_attest_extract_bssids_skips_wrong_size(void);
+extern void test_attest_extract_bssids_missing_key4(void);
+extern void test_attest_extract_bssids_truncated_blob(void);
+extern void test_attest_match_any_bssid_hit(void);
+extern void test_attest_match_any_bssid_miss(void);
+extern void test_attest_query_for_each_finds_self_records(void);
+extern void test_attest_query_for_each_finds_cache_records(void);
+extern void test_attest_query_for_each_filters_non_matching(void);
+extern void test_attest_query_for_each_early_stops(void);
+extern void test_attest_query_for_each_empty_query(void);
+
 int main(void) {
     TEST_RUN(test_ls_empty);
     TEST_RUN(test_ls_with_files);
@@ -269,6 +282,19 @@ int main(void) {
     TEST_RUN(test_attest_cache_dedup_after_eviction);
     TEST_RUN(test_attest_cache_persist_across_init);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 119, test_failures);
+    TEST_RUN(test_attest_extract_bssids_basic);
+    TEST_RUN(test_attest_extract_bssids_caps_at_max);
+    TEST_RUN(test_attest_extract_bssids_skips_wrong_size);
+    TEST_RUN(test_attest_extract_bssids_missing_key4);
+    TEST_RUN(test_attest_extract_bssids_truncated_blob);
+    TEST_RUN(test_attest_match_any_bssid_hit);
+    TEST_RUN(test_attest_match_any_bssid_miss);
+    TEST_RUN(test_attest_query_for_each_finds_self_records);
+    TEST_RUN(test_attest_query_for_each_finds_cache_records);
+    TEST_RUN(test_attest_query_for_each_filters_non_matching);
+    TEST_RUN(test_attest_query_for_each_early_stops);
+    TEST_RUN(test_attest_query_for_each_empty_query);
+
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 131, test_failures);
     return test_failures;
 }

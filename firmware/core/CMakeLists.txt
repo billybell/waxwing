@@ -17,6 +17,7 @@ enable_testing()
 
 set(CORE_SOURCES
     attest_cache.c
+    attest_query.c
     attestations.c
     cborencode.c
     cbor_decode.c
@@ -34,6 +35,7 @@ set(CORE_SOURCES
 set(TEST_SOURCES
     tests/test_runner.c
     tests/test_attest_cache.c
+    tests/test_attest_query.c
     tests/test_attestations.c
     tests/test_commands.c
     tests/test_commands_scan.c
