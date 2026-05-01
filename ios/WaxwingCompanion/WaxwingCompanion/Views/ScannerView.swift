@@ -28,16 +28,16 @@ struct ScannerView: View {
                     }
                     .accessibilityLabel("Settings")
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    scanButton
-                }
-                ToolbarItem(placement: .principal) {
+                ToolbarItem(placement: .topBarLeading) {
                     NavigationLink {
                         MapView()
                     } label: {
                         Image(systemName: "map")
                     }
                     .accessibilityLabel("Map")
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    scanButton
                 }
             }
             .sheet(isPresented: $showingSettings) {
