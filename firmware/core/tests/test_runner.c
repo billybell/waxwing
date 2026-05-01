@@ -126,6 +126,15 @@ extern void test_attestations_persist_across_init(void);
 extern void test_cmd_attestation_write_round_trip(void);
 extern void test_cmd_attestation_write_missing_blob(void);
 
+extern void test_attest_cache_init_empty(void);
+extern void test_attest_cache_write_one(void);
+extern void test_attest_cache_dedup_returns_zero(void);
+extern void test_attest_cache_too_big_rejected(void);
+extern void test_attest_cache_iter_oldest_first(void);
+extern void test_attest_cache_ring_evicts_oldest(void);
+extern void test_attest_cache_dedup_after_eviction(void);
+extern void test_attest_cache_persist_across_init(void);
+
 int main(void) {
     TEST_RUN(test_ls_empty);
     TEST_RUN(test_ls_with_files);
@@ -251,6 +260,15 @@ int main(void) {
     TEST_RUN(test_encounters_get_since_filter);
     TEST_RUN(test_encounters_get_paginates_via_next_offset);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 111, test_failures);
+    TEST_RUN(test_attest_cache_init_empty);
+    TEST_RUN(test_attest_cache_write_one);
+    TEST_RUN(test_attest_cache_dedup_returns_zero);
+    TEST_RUN(test_attest_cache_too_big_rejected);
+    TEST_RUN(test_attest_cache_iter_oldest_first);
+    TEST_RUN(test_attest_cache_ring_evicts_oldest);
+    TEST_RUN(test_attest_cache_dedup_after_eviction);
+    TEST_RUN(test_attest_cache_persist_across_init);
+
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 119, test_failures);
     return test_failures;
 }
