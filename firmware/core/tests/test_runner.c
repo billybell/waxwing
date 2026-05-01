@@ -135,6 +135,14 @@ extern void test_attest_cache_ring_evicts_oldest(void);
 extern void test_attest_cache_dedup_after_eviction(void);
 extern void test_attest_cache_persist_across_init(void);
 
+extern void test_cmd_attest_query_match_round_trip(void);
+extern void test_cmd_attest_query_no_match_returns_empty(void);
+extern void test_cmd_attest_query_paginates(void);
+extern void test_cmd_attest_query_missing_bssids(void);
+extern void test_cmd_attest_ingest_round_trip(void);
+extern void test_cmd_attest_ingest_dedup_counts(void);
+extern void test_cmd_attest_ingest_missing_blobs(void);
+
 extern void test_attest_extract_bssids_basic(void);
 extern void test_attest_extract_bssids_caps_at_max(void);
 extern void test_attest_extract_bssids_skips_wrong_size(void);
@@ -295,6 +303,14 @@ int main(void) {
     TEST_RUN(test_attest_query_for_each_early_stops);
     TEST_RUN(test_attest_query_for_each_empty_query);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 131, test_failures);
+    TEST_RUN(test_cmd_attest_query_match_round_trip);
+    TEST_RUN(test_cmd_attest_query_no_match_returns_empty);
+    TEST_RUN(test_cmd_attest_query_paginates);
+    TEST_RUN(test_cmd_attest_query_missing_bssids);
+    TEST_RUN(test_cmd_attest_ingest_round_trip);
+    TEST_RUN(test_cmd_attest_ingest_dedup_counts);
+    TEST_RUN(test_cmd_attest_ingest_missing_blobs);
+
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 138, test_failures);
     return test_failures;
 }

@@ -6,6 +6,8 @@
 // names here must match exactly.
 
 #include "core/commands.h"
+#include "core/attest_cache.h"
+#include "core/attest_query.h"
 #include "core/attestations.h"
 #include "core/filestore.h"
 #include "core/cborencode.h"
@@ -623,6 +625,161 @@ static int cmd_encounters_get(const uint8_t *body, const uint8_t *body_end,
 }
 
 // ---------------------------------------------------------------------------
+// attest_query / attest_ingest — peer-to-peer attestation lookup (M3 stage 3)
+// ---------------------------------------------------------------------------
+//
+// attest_query inputs `{cmd, bssids:[bstr...], offset?}` and answers
+// with `{ok, blobs:[bstr...], next_offset?}`. The answering side walks
+// both the local self-ring (attestations) and the peer cache-ring
+// (attest_cache); blobs whose claimed BSSID set intersects the query
+// are returned, paginated against the negotiated MTU.
+//
+// attest_ingest inputs `{cmd, blobs:[bstr...]}` and feeds each blob
+// into attest_cache. Returns `{ok, stored, dup, err}` so the caller
+// can tell which arms of the ring the records hit.
+
+#define ATTEST_QUERY_MAX_BSSIDS 12
+
+typedef struct {
+    uint32_t skip_remaining;
+    size_t   budget;
+    size_t   used;
+    uint32_t to_emit;
+    uint32_t emitted;
+    uint8_t *p;
+    bool     overflow;
+} attq_walk_t;
+
+static size_t attq_outer_size(size_t blob_len) {
+    if (blob_len <= 23)   return 1 + blob_len;
+    if (blob_len <= 0xFF) return 2 + blob_len;
+    return 3 + blob_len;
+}
+
+static int attq_count_cb(void *ctx, const uint8_t *blob, size_t len) {
+    attq_walk_t *w = (attq_walk_t*)ctx;
+    (void)blob;
+    if (w->skip_remaining > 0) { w->skip_remaining--; return 0; }
+    size_t outer = attq_outer_size(len);
+    if (w->used + outer > w->budget) { w->overflow = true; return 1; }
+    w->used += outer;
+    w->to_emit++;
+    return 0;
+}
+
+static int attq_emit_cb(void *ctx, const uint8_t *blob, size_t len) {
+    attq_walk_t *w = (attq_walk_t*)ctx;
+    if (w->skip_remaining > 0) { w->skip_remaining--; return 0; }
+    if (w->emitted >= w->to_emit) return 1;
+    w->p += cborencode_byte_str(w->p, blob, len);
+    w->emitted++;
+    return 0;
+}
+
+static int cmd_attest_query(const uint8_t *body, const uint8_t *body_end,
+                            uint64_t pc, uint8_t *out, size_t out_max) {
+    cbor_item_t arr;
+    if (!cbor_map_find(body, body_end, pc, "bssids", &arr) ||
+        arr.type != CBOR_TYPE_ARRAY) {
+        return emit_error(out, out_max, "missing bssids");
+    }
+
+    uint8_t  query[ATTEST_QUERY_MAX_BSSIDS][6];
+    int      qcount = 0;
+    const uint8_t *p_in = arr.data;
+    for (uint64_t i = 0; i < arr.arg && qcount < ATTEST_QUERY_MAX_BSSIDS; i++) {
+        cbor_item_t item;
+        if (!cbor_parse(p_in, body_end, &item)) {
+            return emit_error(out, out_max, "bad bssid array");
+        }
+        p_in = item.next;
+        if (item.type != CBOR_TYPE_BSTR || item.arg != 6) continue;
+        memcpy(query[qcount], item.data, 6);
+        qcount++;
+    }
+    if (qcount == 0) {
+        return emit_error(out, out_max, "no valid bssids");
+    }
+
+    uint64_t offset_u = 0;
+    cbor_map_get_uint(body, body_end, pc, "offset", &offset_u);
+
+    size_t mtu    = (size_t)ble_get_mtu();
+    size_t budget = (mtu > 3) ? (mtu - 3) : 20;
+    if (budget > out_max) budget = out_max;
+    const size_t ENVELOPE_RESERVE = 32;
+    size_t rec_budget = (budget > ENVELOPE_RESERVE) ? budget - ENVELOPE_RESERVE : 0;
+
+    attq_walk_t w = {
+        .skip_remaining = (uint32_t)offset_u,
+        .budget         = rec_budget,
+    };
+    attest_query_for_each(query, qcount, &w, attq_count_cb);
+
+    bool     has_next    = w.overflow;
+    uint32_t next_offset = (uint32_t)offset_u + w.to_emit;
+
+    uint8_t *p = out;
+    p += cborencode_map_header(p, has_next ? 3 : 2);
+    p += cborencode_text_str(p, "ok", 2);
+    p += cborencode_bool(p, 1);
+    p += cborencode_text_str(p, "blobs", 5);
+    p += cborencode_array_header(p, w.to_emit);
+
+    attq_walk_t emit = {
+        .skip_remaining = (uint32_t)offset_u,
+        .to_emit        = w.to_emit,
+        .p              = p,
+    };
+    attest_query_for_each(query, qcount, &emit, attq_emit_cb);
+    p = emit.p;
+
+    if (has_next) {
+        p += cborencode_text_str(p, "next_offset", 11);
+        p += cborencode_uint(p, next_offset);
+    }
+    (void)out_max;
+    return (int)(p - out);
+}
+
+static int cmd_attest_ingest(const uint8_t *body, const uint8_t *body_end,
+                             uint64_t pc, uint8_t *out, size_t out_max) {
+    cbor_item_t arr;
+    if (!cbor_map_find(body, body_end, pc, "blobs", &arr) ||
+        arr.type != CBOR_TYPE_ARRAY) {
+        return emit_error(out, out_max, "missing blobs");
+    }
+
+    uint32_t stored = 0, dup = 0, err = 0;
+    const uint8_t *p_in = arr.data;
+    for (uint64_t i = 0; i < arr.arg; i++) {
+        cbor_item_t item;
+        if (!cbor_parse(p_in, body_end, &item)) {
+            return emit_error(out, out_max, "bad blobs array");
+        }
+        p_in = item.next;
+        if (item.type != CBOR_TYPE_BSTR || item.arg == 0) { err++; continue; }
+        int rc = attest_cache_write(item.data, (size_t)item.arg);
+        if      (rc == 1) stored++;
+        else if (rc == 0) dup++;
+        else              err++;
+    }
+
+    uint8_t *p = out;
+    p += cborencode_map_header(p, 4);
+    p += cborencode_text_str(p, "ok", 2);
+    p += cborencode_bool(p, 1);
+    p += cborencode_text_str(p, "stored", 6);
+    p += cborencode_uint(p, stored);
+    p += cborencode_text_str(p, "dup", 3);
+    p += cborencode_uint(p, dup);
+    p += cborencode_text_str(p, "err", 3);
+    p += cborencode_uint(p, err);
+    (void)out_max;
+    return (int)(p - out);
+}
+
+// ---------------------------------------------------------------------------
 // Top-level dispatch
 // ---------------------------------------------------------------------------
 
@@ -660,6 +817,8 @@ int commands_handle(const uint8_t *cmd_data, size_t cmd_len,
     else if (strcmp(cmd_name, "encounters_get") == 0) rc = cmd_encounters_get(body, body_end, pc, out_buf, out_max);
     else if (strcmp(cmd_name, "attestation_write") == 0) rc = cmd_attestation_write(body, body_end, pc, out_buf, out_max);
     else if (strcmp(cmd_name, "attestations_get") == 0) rc = cmd_attestations_get(body, body_end, pc, out_buf, out_max);
+    else if (strcmp(cmd_name, "attest_query") == 0)  rc = cmd_attest_query(body, body_end, pc, out_buf, out_max);
+    else if (strcmp(cmd_name, "attest_ingest") == 0) rc = cmd_attest_ingest(body, body_end, pc, out_buf, out_max);
     else                                             rc = emit_error(out_buf, out_max, "unknown cmd");
 
     if (rc < 0) rc = emit_error(out_buf, out_max, "internal error");

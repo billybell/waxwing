@@ -1,3 +1,4 @@
+#include "core/attest_cache.h"
 #include "core/attestations.h"
 #include "core/commands.h"
 #include "core/cborencode.h"
@@ -281,6 +282,231 @@ void test_cmd_attestation_write_missing_blob(void) {
     TEST_ASSERT(cbor_map_find(root.data, out + n, root.arg, "error", &err),
                 "missing blob → error");
     TEST_ASSERT(attestations_count() == 0, "nothing persisted");
+}
+
+// ---------------------------------------------------------------------------
+// attest_query / attest_ingest — M3 stage 3 BLE commands
+// ---------------------------------------------------------------------------
+
+// Build a wire-format attestation blob (companion-side shape: int keys 1..7).
+static size_t build_wire_attestation(uint8_t *out, const uint8_t *bssid6,
+                                     const char *geohash, const char *source) {
+    uint8_t *p = out;
+    uint8_t  author[32]; memset(author, 0xAA, 32);
+    uint8_t  sig[64];    memset(sig,    0xBB, 64);
+
+    p += cborencode_map_header(p, 7);
+    p += cborencode_uint(p, 1); p += cborencode_uint(p, 1);
+    p += cborencode_uint(p, 2); p += cborencode_byte_str(p, author, 32);
+    p += cborencode_uint(p, 3); p += cborencode_uint(p, 1700000000u);
+    p += cborencode_uint(p, 4); p += cborencode_array_header(p, 1);
+    p += cborencode_byte_str(p, bssid6, 6);
+    p += cborencode_uint(p, 5); p += cborencode_text_str(p, geohash, strlen(geohash));
+    p += cborencode_uint(p, 6); p += cborencode_text_str(p, source, strlen(source));
+    p += cborencode_uint(p, 7); p += cborencode_byte_str(p, sig, 64);
+    return (size_t)(p - out);
+}
+
+static size_t build_attest_query(uint8_t *out, const uint8_t (*bssids)[6],
+                                  int n, uint32_t offset) {
+    uint8_t *p = out;
+    int fields = 2 + (offset ? 1 : 0);
+    p += cborencode_map_header(p, fields);
+    p += cborencode_text_str(p, "cmd", 3);
+    p += cborencode_text_str(p, "attest_query", 12);
+    p += cborencode_text_str(p, "bssids", 6);
+    p += cborencode_array_header(p, n);
+    for (int i = 0; i < n; i++) {
+        p += cborencode_byte_str(p, bssids[i], 6);
+    }
+    if (offset) {
+        p += cborencode_text_str(p, "offset", 6);
+        p += cborencode_uint(p, offset);
+    }
+    return (size_t)(p - out);
+}
+
+static size_t build_attest_ingest(uint8_t *out, const uint8_t **blobs,
+                                   const size_t *blob_lens, int n) {
+    uint8_t *p = out;
+    p += cborencode_map_header(p, 2);
+    p += cborencode_text_str(p, "cmd", 3);
+    p += cborencode_text_str(p, "attest_ingest", 13);
+    p += cborencode_text_str(p, "blobs", 5);
+    p += cborencode_array_header(p, n);
+    for (int i = 0; i < n; i++) {
+        p += cborencode_byte_str(p, blobs[i], blob_lens[i]);
+    }
+    return (size_t)(p - out);
+}
+
+static void reset_attest_world(void) {
+    mock_fs_clear();
+    attestations_reset();
+    attest_cache_reset();
+}
+
+void test_cmd_attest_query_match_round_trip(void) {
+    reset_attest_world();
+    // Plant a self attestation and a cache attestation, both keyed on BSSID_A.
+    uint8_t blob1[256], blob2[256];
+    size_t  l1 = build_wire_attestation(blob1, BSSID_A, "9q8yyk7", "self");
+    size_t  l2 = build_wire_attestation(blob2, BSSID_A, "9q8yyk8", "imported");
+    attestations_write(blob1, l1);
+    attest_cache_write(blob2, l2);
+
+    uint8_t query[1][6];
+    memcpy(query[0], BSSID_A, 6);
+    uint8_t req[64], out[1024];
+
+    // Walk pages until exhausted; with stub MTU=247 each ~135-byte attestation
+    // barely fits one per page, so the two matches arrive across two pages.
+    uint64_t total    = 0;
+    uint32_t offset   = 0;
+    int      pages    = 0;
+    while (pages < 8) {
+        size_t rlen = build_attest_query(req, query, 1, offset);
+        int    n    = commands_handle(req, rlen, out, sizeof(out));
+        TEST_ASSERT(n > 0, "attest_query returns response");
+        cbor_item_t root, ok, blobs, next;
+        TEST_ASSERT(cbor_parse(out, out + n, &root) && root.type == CBOR_TYPE_MAP,
+                    "response is map");
+        TEST_ASSERT(cbor_map_find(root.data, out + n, root.arg, "ok", &ok) &&
+                    ok.type == CBOR_TYPE_BOOL && ok.arg == 1, "ok=true");
+        TEST_ASSERT(cbor_map_find(root.data, out + n, root.arg, "blobs", &blobs),
+                    "response has blobs array");
+        total += blobs.arg;
+        pages++;
+        if (!cbor_map_find(root.data, out + n, root.arg, "next_offset", &next)) break;
+        offset = (uint32_t)next.arg;
+    }
+    TEST_ASSERT(total == 2, "cross-ring lookup returns self + cache matches");
+}
+
+void test_cmd_attest_query_no_match_returns_empty(void) {
+    reset_attest_world();
+    uint8_t blob[256];
+    size_t  len = build_wire_attestation(blob, BSSID_A, "9q8", "self");
+    attestations_write(blob, len);
+
+    uint8_t query[1][6];
+    memcpy(query[0], BSSID_B, 6);  // doesn't match the stored record
+    uint8_t req[64], out[256];
+    size_t  rlen = build_attest_query(req, query, 1, 0);
+    int n = commands_handle(req, rlen, out, sizeof(out));
+
+    cbor_item_t root, blobs;
+    cbor_parse(out, out + n, &root);
+    TEST_ASSERT(cbor_map_find(root.data, out + n, root.arg, "blobs", &blobs) &&
+                blobs.type == CBOR_TYPE_ARRAY && blobs.arg == 0,
+                "no matches → empty blobs array");
+}
+
+void test_cmd_attest_query_paginates(void) {
+    reset_attest_world();
+    // Plant several self attestations matching BSSID_A — at ~150 bytes each
+    // plus the wire envelope, the stub MTU=247 forces pagination.
+    for (int i = 0; i < 6; i++) {
+        uint8_t blob[256];
+        char    geo[8] = "9q8yyk0";
+        geo[6] = (char)('0' + i);
+        size_t len = build_wire_attestation(blob, BSSID_A, geo, "self");
+        attestations_write(blob, len);
+    }
+
+    uint8_t query[1][6];
+    memcpy(query[0], BSSID_A, 6);
+    uint8_t req[64], out[256];
+
+    // First page.
+    size_t rlen = build_attest_query(req, query, 1, 0);
+    int n = commands_handle(req, rlen, out, sizeof(out));
+    cbor_item_t root, blobs, next;
+    cbor_parse(out, out + n, &root);
+    cbor_map_find(root.data, out + n, root.arg, "blobs", &blobs);
+    bool has_next = cbor_map_find(root.data, out + n, root.arg, "next_offset", &next);
+    TEST_ASSERT(has_next, "first page sets next_offset");
+    uint64_t first_count = blobs.arg;
+    TEST_ASSERT(first_count > 0 && first_count < 6,
+                "first page returns some but not all matches");
+
+    // Second page picks up where first left off.
+    rlen = build_attest_query(req, query, 1, (uint32_t)next.arg);
+    n = commands_handle(req, rlen, out, sizeof(out));
+    cbor_parse(out, out + n, &root);
+    cbor_map_find(root.data, out + n, root.arg, "blobs", &blobs);
+    TEST_ASSERT(first_count + blobs.arg <= 6, "second page completes within ring size");
+}
+
+void test_cmd_attest_query_missing_bssids(void) {
+    reset_attest_world();
+    uint8_t req[64], out[256];
+    uint8_t *p = req;
+    p += cborencode_map_header(p, 1);
+    p += cborencode_text_str(p, "cmd", 3);
+    p += cborencode_text_str(p, "attest_query", 12);
+    int n = commands_handle(req, (size_t)(p - req), out, sizeof(out));
+    cbor_item_t root, err;
+    cbor_parse(out, out + n, &root);
+    TEST_ASSERT(cbor_map_find(root.data, out + n, root.arg, "error", &err),
+                "missing bssids → error");
+}
+
+void test_cmd_attest_ingest_round_trip(void) {
+    reset_attest_world();
+    uint8_t blob1[256], blob2[256];
+    size_t  l1 = build_wire_attestation(blob1, BSSID_A, "9q8a", "self");
+    size_t  l2 = build_wire_attestation(blob2, BSSID_B, "9q8b", "self");
+
+    const uint8_t *blobs[]    = {blob1, blob2};
+    size_t         lens[]     = {l1,    l2};
+    uint8_t req[1024], out[256];
+    size_t  rlen = build_attest_ingest(req, blobs, lens, 2);
+    int n = commands_handle(req, rlen, out, sizeof(out));
+
+    cbor_item_t root, stored, dup, err;
+    cbor_parse(out, out + n, &root);
+    TEST_ASSERT(cbor_map_find(root.data, out + n, root.arg, "stored", &stored) &&
+                stored.arg == 2, "two new blobs stored");
+    TEST_ASSERT(cbor_map_find(root.data, out + n, root.arg, "dup", &dup) &&
+                dup.arg == 0, "no duplicates on first run");
+    TEST_ASSERT(cbor_map_find(root.data, out + n, root.arg, "err", &err) &&
+                err.arg == 0, "no errors");
+    TEST_ASSERT(attest_cache_count() == 2, "cache holds both records");
+}
+
+void test_cmd_attest_ingest_dedup_counts(void) {
+    reset_attest_world();
+    uint8_t blob[256];
+    size_t  len = build_wire_attestation(blob, BSSID_A, "9q8a", "self");
+
+    const uint8_t *blobs[] = {blob, blob, blob};   // same blob three times
+    size_t         lens[]  = {len,  len,  len};
+    uint8_t req[1024], out[256];
+    size_t  rlen = build_attest_ingest(req, blobs, lens, 3);
+    int n = commands_handle(req, rlen, out, sizeof(out));
+
+    cbor_item_t root, stored, dup;
+    cbor_parse(out, out + n, &root);
+    cbor_map_find(root.data, out + n, root.arg, "stored", &stored);
+    cbor_map_find(root.data, out + n, root.arg, "dup",    &dup);
+    TEST_ASSERT(stored.arg == 1, "first copy stored");
+    TEST_ASSERT(dup.arg    == 2, "subsequent copies counted as dup");
+    TEST_ASSERT(attest_cache_count() == 1, "ring has one record");
+}
+
+void test_cmd_attest_ingest_missing_blobs(void) {
+    reset_attest_world();
+    uint8_t req[64], out[256];
+    uint8_t *p = req;
+    p += cborencode_map_header(p, 1);
+    p += cborencode_text_str(p, "cmd", 3);
+    p += cborencode_text_str(p, "attest_ingest", 13);
+    int n = commands_handle(req, (size_t)(p - req), out, sizeof(out));
+    cbor_item_t root, err;
+    cbor_parse(out, out + n, &root);
+    TEST_ASSERT(cbor_map_find(root.data, out + n, root.arg, "error", &err),
+                "missing blobs → error");
 }
 
 void test_encounters_get_paginates_via_next_offset(void) {

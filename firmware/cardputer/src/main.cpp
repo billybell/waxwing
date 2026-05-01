@@ -5,6 +5,7 @@
 #include "hw/ssid_scan_esp32.h"
 
 extern "C" {
+#include "core/attest_cache.h"
 #include "core/attestations.h"
 #include "core/cborencode.h"
 #include "core/commands.h"
@@ -351,8 +352,9 @@ void setup() {
     cardputer_ssid_scan_init();
     encounters_init();
     attestations_init();
-    std::printf("[main] encounters=%d attestations=%d\r\n",
-                encounters_count(), attestations_count());
+    attest_cache_init();
+    std::printf("[main] encounters=%d attestations=%d cached=%d\r\n",
+                encounters_count(), attestations_count(), attest_cache_count());
 
     ble_start_advertising();
     render_status();

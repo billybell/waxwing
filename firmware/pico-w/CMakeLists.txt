@@ -26,6 +26,8 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
         src/hw/pico-w/filestore_fatfs.c
         src/hw/pico-w/hal_crypto_pico.c
         src/hw/pico-w/ssid_scan_pico.c
+        ../core/attest_cache.c
+        ../core/attest_query.c
         ../core/attestations.c
         ../core/cborencode.c
         ../core/cbor_decode.c

@@ -4,6 +4,7 @@
 #include "pico/time.h"
 #include "hardware/gpio.h"
 #include "core/identity.h"
+#include "core/attest_cache.h"
 #include "core/attestations.h"
 #include "core/constants.h"
 #include "core/encounters.h"
@@ -289,8 +290,9 @@ int main(void) {
     }
     encounters_init();
     attestations_init();
-    printf("[main] encounters=%d attestations=%d\r\n",
-           encounters_count(), attestations_count());
+    attest_cache_init();
+    printf("[main] encounters=%d attestations=%d cached=%d\r\n",
+           encounters_count(), attestations_count(), attest_cache_count());
 
     static uint32_t s_last_scanned_ms = 0;
 
