@@ -6,10 +6,14 @@
 // names here must match exactly.
 
 #include "core/commands.h"
+#include "core/attestations.h"
 #include "core/filestore.h"
 #include "core/cborencode.h"
 #include "core/cbor_decode.h"
+#include "core/encounters.h"
 #include "core/manifest_counter.h"
+#include "core/ssid_scan.h"
+#include "core/ssid_scan_hal.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -44,7 +48,7 @@ static size_t safe_chunk_for_response(void) {
 // ---------------------------------------------------------------------------
 
 static int emit_error(uint8_t *out, size_t out_max, const char *msg) {
-    if (out_max < 32) return -1;
+    if (out_max < 40) return -1;
     uint8_t *p = out;
     p += cborencode_map_header(p, 1);
     p += cborencode_text_str(p, "error", 5);
@@ -158,6 +162,7 @@ static int cmd_ls(const uint8_t *body, const uint8_t *body_end, uint64_t pc,
 }
 
 static int cmd_storage_info(uint8_t *out, size_t out_max) {
+    if (out_max < 128) return emit_error(out, out_max, "buffer too small");
     uint32_t free_b = 0, used_b = 0, reserve_b = 0, count_b = 0;
     fs_storage_info(&free_b, &used_b, &reserve_b, &count_b);
 
@@ -175,12 +180,12 @@ static int cmd_storage_info(uint8_t *out, size_t out_max) {
     p += cborencode_uint(p, reserve_b);
     p += cborencode_text_str(p, "used", 4);
     p += cborencode_uint(p, used_b);
-    (void)out_max;
     return (int)(p - out);
 }
 
 static int cmd_read(const uint8_t *body, const uint8_t *body_end, uint64_t pc,
                     uint8_t *out, size_t out_max) {
+    if (out_max < 256) return emit_error(out, out_max, "buffer too small");
     char name[FS_MAX_NAME_LEN];
     if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
         return emit_error(out, out_max, "missing name");
@@ -254,6 +259,7 @@ static int cmd_write_end(const uint8_t *body, const uint8_t *body_end,
 
 static int cmd_read_start(const uint8_t *body, const uint8_t *body_end,
                           uint64_t pc, uint8_t *out, size_t out_max) {
+    if (out_max < 64) return emit_error(out, out_max, "buffer too small");
     char name[FS_MAX_NAME_LEN];
     if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
         return emit_error(out, out_max, "missing name");
@@ -266,12 +272,12 @@ static int cmd_read_start(const uint8_t *body, const uint8_t *body_end,
     p += cborencode_bool(p, 1);
     p += cborencode_text_str(p, "size", 4);
     p += cborencode_uint(p, (uint32_t)sz);
-    (void)out_max;
     return (int)(p - out);
 }
 
 static int cmd_read_chunk(const uint8_t *body, const uint8_t *body_end,
                           uint64_t pc, uint8_t *out, size_t out_max) {
+    if (out_max < 256) return emit_error(out, out_max, "buffer too small");
     char name[FS_MAX_NAME_LEN];
     uint64_t offset_u = 0, size_u = MAX_INLINE_DATA;
     if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
@@ -292,7 +298,6 @@ static int cmd_read_chunk(const uint8_t *body, const uint8_t *body_end,
     p += cborencode_bool(p, 1);
     p += cborencode_text_str(p, "data", 4);
     p += cborencode_byte_str(p, scratch, (size_t)n);
-    (void)out_max;
     return (int)(p - out);
 }
 
@@ -353,6 +358,270 @@ static int cmd_write_meta(const uint8_t *body, const uint8_t *body_end,
     return emit_ok(out, out_max);
 }
 
+// Conservative estimate of one observation's encoded size. Uses worst-case
+// encodings for rssi/channel (2 bytes) so we never over-pack the budget.
+static size_t obs_entry_size(uint8_t ssid_len) {
+    size_t s = 1;                                          // map(4) header
+    s += 1 + 5;                                            // "bssid" key
+    s += 2 + 6;                                            // bstr(6)
+    s += 1 + 4;                                            // "ssid" key
+    s += (ssid_len <= 23 ? 1 : 2) + ssid_len;              // tstr(L)
+    s += 1 + 4;                                            // "rssi" key
+    s += 2;                                                // worst-case neg int
+    s += 1 + 7;                                            // "channel" key
+    s += 2;                                                // worst-case uint
+    return s;
+}
+
+static int cmd_scan_get(const uint8_t *body, const uint8_t *body_end, uint64_t pc,
+                        uint8_t *out, size_t out_max) {
+    ssid_scan_t scan;
+    if (!ssid_scan_hal_latest(&scan)) {
+        return emit_error(out, out_max, "no scan");
+    }
+    uint64_t offset_u = 0;
+    cbor_map_get_uint(body, body_end, pc, "offset", &offset_u);
+    uint8_t start = (offset_u > scan.count) ? scan.count : (uint8_t)offset_u;
+
+    // Budget the response against the negotiated MTU. Worst-case envelope:
+    //   map(4) hdr (1) + "ok"+true (4) + "scanned_ms"+uint64 (21)
+    //   + "obs"+array_hdr (5) + "next_offset"+uint (14) ≈ 45 bytes. Reserve 48.
+    size_t mtu    = (size_t)ble_get_mtu();
+    size_t budget = (mtu > 3) ? (mtu - 3) : 20;
+    if (budget > out_max) budget = out_max;
+    const size_t ENVELOPE_RESERVE = 48;
+    size_t entry_budget = (budget > ENVELOPE_RESERVE) ? budget - ENVELOPE_RESERVE : 0;
+
+    uint8_t cnt  = 0;
+    size_t  used = 0;
+    for (uint8_t i = start; i < scan.count; i++) {
+        size_t esz = obs_entry_size(scan.obs[i].ssid_len);
+        if (used + esz > entry_budget) break;
+        used += esz;
+        cnt++;
+    }
+    uint8_t  next_offset = (uint8_t)(start + cnt);
+    bool     has_next    = next_offset < scan.count;
+    uint8_t  field_count = has_next ? 4 : 3;
+
+    uint8_t *p = out;
+    p += cborencode_map_header(p, field_count);
+    p += cborencode_text_str(p, "ok", 2);
+    p += cborencode_bool(p, 1);
+    p += cborencode_text_str(p, "scanned_ms", 10);
+    p += cborencode_uint(p, scan.scanned_ms);
+    p += cborencode_text_str(p, "obs", 3);
+    p += cborencode_array_header(p, cnt);
+    for (uint8_t i = start; i < start + cnt; i++) {
+        p += cborencode_map_header(p, 4);
+        p += cborencode_text_str(p, "bssid", 5);
+        p += cborencode_byte_str(p, scan.obs[i].bssid, 6);
+        p += cborencode_text_str(p, "ssid", 4);
+        p += cborencode_text_str(p, (const char*)scan.obs[i].ssid, scan.obs[i].ssid_len);
+        p += cborencode_text_str(p, "rssi", 4);
+        p += cborencode_int(p, scan.obs[i].rssi);
+        p += cborencode_text_str(p, "channel", 7);
+        p += cborencode_uint(p, scan.obs[i].channel);
+    }
+    if (has_next) {
+        p += cborencode_text_str(p, "next_offset", 11);
+        p += cborencode_uint(p, next_offset);
+    }
+    return (int)(p - out);
+}
+
+static int cmd_attestation_write(const uint8_t *body, const uint8_t *body_end,
+                                  uint64_t pc, uint8_t *out, size_t out_max) {
+    const uint8_t *blob_ptr = NULL;
+    size_t         blob_len = 0;
+    if (!cbor_map_get_bytes(body, body_end, pc, "blob", &blob_ptr, &blob_len) ||
+        blob_ptr == NULL || blob_len == 0) {
+        return emit_error(out, out_max, "missing blob");
+    }
+    if (attestations_write(blob_ptr, blob_len) != 0) {
+        return emit_error(out, out_max, "attestation_write failed");
+    }
+    return emit_ok(out, out_max);
+}
+
+typedef struct {
+    uint32_t skip_remaining;
+    size_t   budget;
+    size_t   used;
+    uint32_t to_emit;
+    uint32_t emitted;
+    uint8_t *p;
+    bool     overflow;
+} attest_walk_t;
+
+static size_t attest_outer_size(size_t blob_len) {
+    if (blob_len <= 23)   return 1 + blob_len;
+    if (blob_len <= 0xFF) return 2 + blob_len;
+    return 3 + blob_len;
+}
+
+static int attest_count_cb(void *ctx, const uint8_t *blob, size_t len) {
+    attest_walk_t *w = (attest_walk_t*)ctx;
+    if (w->skip_remaining > 0) { w->skip_remaining--; return 0; }
+    size_t outer = attest_outer_size(len);
+    if (w->used + outer > w->budget) { w->overflow = true; return 1; }
+    w->used += outer;
+    w->to_emit++;
+    return 0;
+}
+
+static int attest_emit_cb(void *ctx, const uint8_t *blob, size_t len) {
+    attest_walk_t *w = (attest_walk_t*)ctx;
+    if (w->skip_remaining > 0) { w->skip_remaining--; return 0; }
+    if (w->emitted >= w->to_emit) return 1;
+    w->p += cborencode_byte_str(w->p, blob, len);
+    w->emitted++;
+    return 0;
+}
+
+static int cmd_attestations_get(const uint8_t *body, const uint8_t *body_end,
+                                 uint64_t pc, uint8_t *out, size_t out_max) {
+    uint64_t offset_u = 0;
+    cbor_map_get_uint(body, body_end, pc, "offset", &offset_u);
+
+    size_t mtu    = (size_t)ble_get_mtu();
+    size_t budget = (mtu > 3) ? (mtu - 3) : 20;
+    if (budget > out_max) budget = out_max;
+    const size_t ENVELOPE_RESERVE = 32;
+    size_t rec_budget = (budget > ENVELOPE_RESERVE) ? budget - ENVELOPE_RESERVE : 0;
+
+    attest_walk_t w = {
+        .skip_remaining = (uint32_t)offset_u,
+        .budget         = rec_budget,
+    };
+    attestations_for_each(&w, attest_count_cb);
+
+    bool     has_next    = w.overflow;
+    uint32_t next_offset = (uint32_t)offset_u + w.to_emit;
+
+    uint8_t *p = out;
+    p += cborencode_map_header(p, has_next ? 3 : 2);
+    p += cborencode_text_str(p, "ok", 2);
+    p += cborencode_bool(p, 1);
+    p += cborencode_text_str(p, "records", 7);
+    p += cborencode_array_header(p, w.to_emit);
+
+    attest_walk_t emit = {
+        .skip_remaining = (uint32_t)offset_u,
+        .to_emit        = w.to_emit,
+        .p              = p,
+    };
+    attestations_for_each(&emit, attest_emit_cb);
+    p = emit.p;
+
+    if (has_next) {
+        p += cborencode_text_str(p, "next_offset", 11);
+        p += cborencode_uint(p, next_offset);
+    }
+    (void)out_max;
+    return (int)(p - out);
+}
+
+// State for the two-pass walk used by cmd_encounters_get.
+typedef struct {
+    uint32_t since_ms;
+    uint32_t skip_remaining;   // records to skip (already returned in earlier pages)
+    size_t   budget;           // bytes available for record payload
+    size_t   used;             // bytes already accounted for
+    uint32_t to_emit;          // records that will fit in this page
+    uint32_t emitted;          // records emitted in pass 2
+    uint8_t *p;                // write cursor in pass 2
+    bool     overflow;         // true if at least one record didn't fit
+} enc_walk_t;
+
+static size_t enc_record_outer_size(size_t rec_len) {
+    // bstr header: 1 byte for ≤23, 2 bytes for ≤255, 3 for ≤65535.
+    if (rec_len <= 23)   return 1 + rec_len;
+    if (rec_len <= 0xFF) return 2 + rec_len;
+    return 3 + rec_len;
+}
+
+static int enc_count_cb(void *ctx, const uint8_t *cbor, size_t len) {
+    enc_walk_t *w = (enc_walk_t*)ctx;
+    uint32_t cap_at = 0;
+    if (!encounters_record_captured_at(cbor, len, &cap_at)) return 0;
+    if (cap_at <= w->since_ms) return 0;
+    if (w->skip_remaining > 0) { w->skip_remaining--; return 0; }
+    size_t outer = enc_record_outer_size(len);
+    if (w->used + outer > w->budget) {
+        w->overflow = true;
+        return 1; // stop scanning
+    }
+    w->used += outer;
+    w->to_emit++;
+    return 0;
+}
+
+static int enc_emit_cb(void *ctx, const uint8_t *cbor, size_t len) {
+    enc_walk_t *w = (enc_walk_t*)ctx;
+    uint32_t cap_at = 0;
+    if (!encounters_record_captured_at(cbor, len, &cap_at)) return 0;
+    if (cap_at <= w->since_ms) return 0;
+    if (w->skip_remaining > 0) { w->skip_remaining--; return 0; }
+    if (w->emitted >= w->to_emit) return 1;
+    w->p += cborencode_byte_str(w->p, cbor, len);
+    w->emitted++;
+    return 0;
+}
+
+static int cmd_encounters_get(const uint8_t *body, const uint8_t *body_end,
+                              uint64_t pc, uint8_t *out, size_t out_max) {
+    uint64_t since_ms_u = 0, offset_u = 0;
+    cbor_map_get_uint(body, body_end, pc, "since_ms", &since_ms_u);
+    cbor_map_get_uint(body, body_end, pc, "offset",   &offset_u);
+
+    size_t mtu = (size_t)ble_get_mtu();
+    size_t budget = (mtu > 3) ? (mtu - 3) : 20;
+    if (budget > out_max) budget = out_max;
+    // Outer envelope: map(2|3) + "ok"+true + "records"+array_hdr + optional next_offset.
+    const size_t ENVELOPE_RESERVE = 32;
+    size_t rec_budget = (budget > ENVELOPE_RESERVE) ? budget - ENVELOPE_RESERVE : 0;
+
+    enc_walk_t w = {
+        .since_ms       = (uint32_t)since_ms_u,
+        .skip_remaining = (uint32_t)offset_u,
+        .budget         = rec_budget,
+        .used           = 0,
+        .to_emit        = 0,
+        .emitted        = 0,
+        .p              = NULL,
+        .overflow       = false,
+    };
+    encounters_for_each(&w, enc_count_cb);
+
+    bool has_next = w.overflow;
+    uint32_t next_offset = (uint32_t)offset_u + w.to_emit;
+
+    uint8_t *p = out;
+    p += cborencode_map_header(p, has_next ? 3 : 2);
+    p += cborencode_text_str(p, "ok", 2);
+    p += cborencode_bool(p, 1);
+    p += cborencode_text_str(p, "records", 7);
+    p += cborencode_array_header(p, w.to_emit);
+
+    enc_walk_t emit = {
+        .since_ms       = (uint32_t)since_ms_u,
+        .skip_remaining = (uint32_t)offset_u,
+        .to_emit        = w.to_emit,
+        .emitted        = 0,
+        .p              = p,
+    };
+    encounters_for_each(&emit, enc_emit_cb);
+    p = emit.p;
+
+    if (has_next) {
+        p += cborencode_text_str(p, "next_offset", 11);
+        p += cborencode_uint(p, next_offset);
+    }
+    (void)out_max;
+    return (int)(p - out);
+}
+
 // ---------------------------------------------------------------------------
 // Top-level dispatch
 // ---------------------------------------------------------------------------
@@ -370,7 +639,7 @@ int commands_handle(const uint8_t *cmd_data, size_t cmd_len,
     const uint8_t *body = root.data;
     const uint8_t *body_end = end;
 
-    char cmd_name[16];
+    char cmd_name[24];
     if (!cbor_map_get_text(body, body_end, pc, "cmd", cmd_name, sizeof(cmd_name), NULL))
         return emit_error(out_buf, out_max, "missing cmd");
 
@@ -387,6 +656,10 @@ int commands_handle(const uint8_t *cmd_data, size_t cmd_len,
     else if (strcmp(cmd_name, "delete") == 0)        rc = cmd_delete(body, body_end, pc, out_buf, out_max);
     else if (strcmp(cmd_name, "read_meta") == 0)     rc = cmd_read_meta(body, body_end, pc, out_buf, out_max);
     else if (strcmp(cmd_name, "write_meta") == 0)    rc = cmd_write_meta(body, body_end, pc, out_buf, out_max);
+    else if (strcmp(cmd_name, "scan_get") == 0)      rc = cmd_scan_get(body, body_end, pc, out_buf, out_max);
+    else if (strcmp(cmd_name, "encounters_get") == 0) rc = cmd_encounters_get(body, body_end, pc, out_buf, out_max);
+    else if (strcmp(cmd_name, "attestation_write") == 0) rc = cmd_attestation_write(body, body_end, pc, out_buf, out_max);
+    else if (strcmp(cmd_name, "attestations_get") == 0) rc = cmd_attestations_get(body, body_end, pc, out_buf, out_max);
     else                                             rc = emit_error(out_buf, out_max, "unknown cmd");
 
     if (rc < 0) rc = emit_error(out_buf, out_max, "internal error");

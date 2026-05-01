@@ -35,6 +35,20 @@ size_t cborencode_uint(uint8_t *buf, uint32_t value) {
     return encode_header(buf, 0, value);
 }
 
+size_t cborencode_uint64(uint8_t *buf, uint64_t value) {
+    if (value <= 0xFFFFFFFFu) return encode_header(buf, 0, (uint32_t)value);
+    buf[0] = 0x00 | 27;
+    buf[1] = (uint8_t)(value >> 56);
+    buf[2] = (uint8_t)(value >> 48);
+    buf[3] = (uint8_t)(value >> 40);
+    buf[4] = (uint8_t)(value >> 32);
+    buf[5] = (uint8_t)(value >> 24);
+    buf[6] = (uint8_t)(value >> 16);
+    buf[7] = (uint8_t)(value >> 8);
+    buf[8] = (uint8_t)(value);
+    return 9;
+}
+
 size_t cborencode_int(uint8_t *buf, int32_t value) {
     if (value >= 0) return encode_header(buf, 0, (uint32_t)value);
     uint32_t n = (uint32_t)(-(value + 1));

@@ -16,29 +16,37 @@ project(waxwing_core C)
 enable_testing()
 
 set(CORE_SOURCES
+    attestations.c
     cborencode.c
     cbor_decode.c
     commands.c
+    encounters.c
     identity.c
     manifest_counter.c
     mesh_state.c
     peer_sync.c
     peer_table.c
+    ssid_scan.c
     thirdparty/sha256/sha256.c
 )
 
 set(TEST_SOURCES
     tests/test_runner.c
+    tests/test_attestations.c
     tests/test_commands.c
+    tests/test_commands_scan.c
+    tests/test_encounters.c
     tests/test_identity.c
     tests/test_manifest_counter.c
     tests/test_mesh_state.c
     tests/test_peer_sync.c
     tests/test_peer_table.c
     tests/test_sha256.c
+    tests/test_ssid_scan.c
     tests/mock_filestore.c
     tests/stub_ble.c
     tests/stub_hal_crypto.c
+    tests/stub_ssid_scan.c
 )
 
 # Prefix core sources so consumers see them as core/<file> from the parent

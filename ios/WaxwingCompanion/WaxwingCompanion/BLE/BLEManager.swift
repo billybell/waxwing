@@ -608,6 +608,163 @@ enum FileContentType {
         }
     }
 
+    /// Request the most recent SSID scan snapshot from the connected node.
+    /// Walks `next_offset` pages so all observations are returned even when
+    /// the encoded response would exceed one ATT MTU.
+    func requestScan(completion: @escaping (LiveScan?, String?) -> Void) {
+        enqueueOperation { [weak self] in
+            guard let self else { return }
+            self.fetchScanPage(offset: 0, scannedMs: nil, accumulated: [],
+                               completion: completion)
+        }
+    }
+
+    private func fetchScanPage(offset: UInt64,
+                                scannedMs: UInt64?,
+                                accumulated: [SSIDObservation],
+                                completion: @escaping (LiveScan?, String?) -> Void) {
+        var cmd: [String: Any] = ["cmd": "scan_get"]
+        if offset > 0 { cmd["offset"] = offset }
+        sendFileCommand(cmd) { [weak self] response in
+            guard let self else { return }
+            if let error = response["error"]?.stringValue {
+                self.finishOperation()
+                completion(nil, error)
+                return
+            }
+            guard case .array(let obsArr)? = response["obs"] else {
+                self.finishOperation()
+                completion(nil, "invalid scan response")
+                return
+            }
+            let pageObs: [SSIDObservation] = obsArr.compactMap { item in
+                guard let bssid = item["bssid"]?.dataValue, bssid.count == 6 else { return nil }
+                let ssid = item["ssid"]?.stringValue ?? ""
+                let rssi = Int(item["rssi"]?.intValue ?? 0)
+                let channel = Int(item["channel"]?.uintValue ?? 0)
+                return SSIDObservation(bssid: bssid, ssid: ssid, rssi: rssi, channel: channel)
+            }
+            // Stamp the snapshot with the first page's scanned_ms; subsequent
+            // pages echo the same value, but pinning to the first prevents a
+            // race where the firmware finished a *new* scan between pages.
+            let stamp = scannedMs ?? response["scanned_ms"]?.uintValue ?? 0
+            let merged = accumulated + pageObs
+            if let next = response["next_offset"]?.uintValue {
+                self.fetchScanPage(offset: next, scannedMs: stamp,
+                                   accumulated: merged, completion: completion)
+            } else {
+                self.finishOperation()
+                completion(LiveScan(scannedMs: stamp, observations: merged), nil)
+            }
+        }
+    }
+
+    /// Sign an attestation with the user's content identity, write it to
+    /// the connected node, and add it to the local AttestationsStore so
+    /// the map picks it up immediately. `bssids` is trimmed to top 3.
+    func writeAttestation(bssids: [Data],
+                          location: (latitude: Double, longitude: Double),
+                          source: Attestation.Source = .self,
+                          completion: @escaping (Attestation?, String?) -> Void) {
+        guard let author = ContentIdentity.shared.publicKey else {
+            completion(nil, "no content identity — onboard first")
+            return
+        }
+        let topBssids = Array(bssids.prefix(3))
+        guard !topBssids.isEmpty else {
+            completion(nil, "no BSSIDs to attest")
+            return
+        }
+        let geohash = Geohash.encode(latitude: location.latitude,
+                                      longitude: location.longitude,
+                                      precision: 7)
+        let attestation: Attestation
+        do {
+            attestation = try Attestation.build(
+                author: author,
+                capturedAt: Date(),
+                bssids: topBssids,
+                geohash: geohash,
+                source: source,
+                signer: { try ContentIdentity.shared.sign($0) }
+            )
+        } catch {
+            completion(nil, "sign failed: \(error.localizedDescription)")
+            return
+        }
+        enqueueOperation { [weak self] in
+            guard let self else { return }
+            self.sendFileCommand([
+                "cmd":  "attestation_write",
+                "blob": attestation.signedBytes
+            ]) { [weak self] response in
+                guard let self else { return }
+                defer { self.finishOperation() }
+                if let error = response["error"]?.stringValue {
+                    completion(nil, error)
+                    return
+                }
+                AttestationsStore.shared.add(attestation)
+                completion(attestation, nil)
+            }
+        }
+    }
+
+    /// Pull all new encounter records from the connected node and merge
+    /// into the local store. Filters server-side using the newest
+    /// captured_at_ms we already have. Walks pages to completion.
+    func pullEncounters(node: WaxwingNode,
+                         completion: @escaping (Int, String?) -> Void) {
+        guard let identity = node.identity else {
+            completion(0, "no identity")
+            return
+        }
+        let nodeHex = identity.tpkHex
+        let since = EncountersStore.shared.latestCapturedAtMs(node: nodeHex)
+        enqueueOperation { [weak self] in
+            guard let self else { return }
+            self.fetchEncountersPage(nodeHex: nodeHex, since: since,
+                                      offset: 0, accumulated: [],
+                                      completion: completion)
+        }
+    }
+
+    private func fetchEncountersPage(nodeHex: String, since: UInt64,
+                                      offset: UInt64,
+                                      accumulated: [EncounterRecord],
+                                      completion: @escaping (Int, String?) -> Void) {
+        var cmd: [String: Any] = ["cmd": "encounters_get"]
+        if since > 0  { cmd["since_ms"] = since }
+        if offset > 0 { cmd["offset"]   = offset }
+        sendFileCommand(cmd) { [weak self] response in
+            guard let self else { return }
+            if let error = response["error"]?.stringValue {
+                self.finishOperation()
+                completion(accumulated.count, error)
+                return
+            }
+            guard case .array(let items)? = response["records"] else {
+                self.finishOperation()
+                completion(accumulated.count, "invalid records response")
+                return
+            }
+            let pageRecords: [EncounterRecord] = items.compactMap { item in
+                guard let blob = item.dataValue else { return nil }
+                return EncounterRecord.parse(blob)
+            }
+            let merged = accumulated + pageRecords
+            if let next = response["next_offset"]?.uintValue {
+                self.fetchEncountersPage(nodeHex: nodeHex, since: since,
+                                          offset: next, accumulated: merged,
+                                          completion: completion)
+            } else {
+                EncountersStore.shared.merge(node: nodeHex, records: merged)
+                self.finishOperation()
+                completion(merged.count, nil)
+            }
+        }
+    }
+
     /// Delete a file on the connected node.
     func deleteFile(name: String, completion: ((Bool) -> Void)? = nil) {
         enqueueOperation { [weak self] in
@@ -715,7 +872,8 @@ enum FileContentType {
 
         // Wrap the caller's handler so it ALSO cancels the watchdog and
         // resets in-progress state on every exit path.
-        let wrapped: (CBORValue) -> Void = { [unowned self] response in
+        let wrapped: (CBORValue) -> Void = { [weak self] response in
+            guard let self = self else { return }
             let elapsed = Date().timeIntervalSince(sentAt)
             print(String(format: "[BLE] sendFileCommand: %@%@ ← response in %.2fs",
                          cmdName, extra, elapsed))

@@ -50,8 +50,11 @@ static bool decode_arg(const uint8_t **pp, const uint8_t *end,
 // Parse one item
 // ---------------------------------------------------------------------------
 
-bool cbor_parse(const uint8_t *buf, const uint8_t *end, cbor_item_t *out) {
-    if (!buf || !out || buf >= end) return false;
+#define MAX_CBOR_DEPTH 8
+
+// Parse one item internally with a depth limit to prevent stack overflow.
+static bool cbor_parse_internal(const uint8_t *buf, const uint8_t *end, cbor_item_t *out, int depth) {
+    if (!buf || !out || buf >= end || depth > MAX_CBOR_DEPTH) return false;
 
     out->start = buf;
     out->data = NULL;
@@ -75,7 +78,7 @@ bool cbor_parse(const uint8_t *buf, const uint8_t *end, cbor_item_t *out) {
     case CBOR_TYPE_BSTR:
     case CBOR_TYPE_TSTR:
         if (!decode_arg(&p, end, additional, &arg)) return false;
-        if (p + arg > end) return false;
+        if (arg > (uint64_t)(end - p)) return false;
         out->type = (cbor_type_t)major;
         out->arg = arg;
         out->data = p;
@@ -85,13 +88,18 @@ bool cbor_parse(const uint8_t *buf, const uint8_t *end, cbor_item_t *out) {
     case CBOR_TYPE_ARRAY:
     case CBOR_TYPE_MAP: {
         if (!decode_arg(&p, end, additional, &arg)) return false;
+
+        // Bound check: each child must be at least 1 byte.
+        uint64_t children = (major == CBOR_TYPE_MAP) ? arg * 2 : arg;
+        if (major == CBOR_TYPE_MAP && arg > UINT64_MAX / 2) return false; // overflow check
+        if ((uint64_t)(end - p) < children) return false;
+
         out->type = (cbor_type_t)major;
         out->arg = arg;
         out->data = p;  // first child (or first key/value pair for a map)
-        uint64_t children = (major == CBOR_TYPE_MAP) ? arg * 2 : arg;
         for (uint64_t i = 0; i < children; i++) {
             cbor_item_t tmp;
-            if (!cbor_parse(p, end, &tmp)) return false;
+            if (!cbor_parse_internal(p, end, &tmp, depth + 1)) return false;
             p = tmp.next;
         }
         out->next = p;
@@ -131,6 +139,11 @@ bool cbor_parse(const uint8_t *buf, const uint8_t *end, cbor_item_t *out) {
         return false;
     }
 }
+
+bool cbor_parse(const uint8_t *buf, const uint8_t *end, cbor_item_t *out) {
+    return cbor_parse_internal(buf, end, out, 0);
+}
+
 
 // ---------------------------------------------------------------------------
 // Map helpers
@@ -173,7 +186,7 @@ bool cbor_map_get_text(const uint8_t *map_data, const uint8_t *end,
     cbor_item_t v;
     if (!cbor_map_find(map_data, end, pair_count, key, &v)) return false;
     if (v.type != CBOR_TYPE_TSTR) return false;
-    if (v.arg + 1 > out_buf_size) return false; // need room for NUL terminator
+    if (v.arg >= out_buf_size) return false; // need room for NUL terminator
     memcpy(out_buf, v.data, (size_t)v.arg);
     out_buf[v.arg] = '\0';
     if (out_len) *out_len = (size_t)v.arg;

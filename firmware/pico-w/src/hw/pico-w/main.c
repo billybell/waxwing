@@ -4,7 +4,9 @@
 #include "pico/time.h"
 #include "hardware/gpio.h"
 #include "core/identity.h"
+#include "core/attestations.h"
 #include "core/constants.h"
+#include "core/encounters.h"
 #include "core/filestore.h"
 #include "core/commands.h"
 #include "core/hal_crypto.h"
@@ -12,8 +14,10 @@
 #include "core/mesh_state.h"
 #include "core/peer_sync.h"
 #include "core/peer_table.h"
+#include "core/ssid_scan.h"
 #include "hw/pico-w/ble.h"
 #include "hw/pico-w/ble_client.h"
+#include "hw/pico-w/ssid_scan_pico.h"
 
 // LED blink intervals (ms)
 #define LED_GRACE_MS         50      // very fast pulse during boot grace window
@@ -280,11 +284,35 @@ int main(void) {
 
     mesh_state_init(now_ms(), mesh_rng);
 
+    if (!pico_ssid_scan_init()) {
+        printf("[main] WARN: ssid_scan init failed (BLE will still work)\r\n");
+    }
+    encounters_init();
+    attestations_init();
+    printf("[main] encounters=%d attestations=%d\r\n",
+           encounters_count(), attestations_count());
+
+    static uint32_t s_last_scanned_ms = 0;
+
     printf("[main] Ready, entering run loop...\r\n\r\n");
 
     while (true) {
         ble_process();
         apply_mesh_action(mesh_state_tick(now_ms()));
+        pico_ssid_scan_tick(now_ms(), mesh_state_phase() == MESH_CONNECTED);
+
+        const ssid_scan_t *scan = pico_ssid_scan_latest();
+        if (scan && scan->scanned_ms != s_last_scanned_ms) {
+            s_last_scanned_ms = scan->scanned_ms;
+            if (encounters_should_record(scan, scan->scanned_ms, 600000)) {
+                if (encounters_record(scan, scan->scanned_ms,
+                                      identity.pub, identity.seed) == 0) {
+                    printf("[main] encounter recorded (%d total)\r\n",
+                           encounters_count());
+                }
+            }
+        }
+
         led_update();
     }
 }

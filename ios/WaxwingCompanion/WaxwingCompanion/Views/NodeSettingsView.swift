@@ -13,6 +13,16 @@ struct NodeSettingsView: View {
             List {
                 connectionSection
                 storageSection
+                if node.connectionState == .ready {
+                    Section {
+                        NavigationLink {
+                            EncountersView(node: node)
+                                .environmentObject(bleManager)
+                        } label: {
+                            Label("SSID Scans", systemImage: "wifi")
+                        }
+                    }
+                }
                 if let identity = node.identity {
                     identitySection(identity)
                     capabilitiesSection(identity)

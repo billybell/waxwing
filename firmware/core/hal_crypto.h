@@ -29,6 +29,14 @@ bool hal_random_bytes(uint8_t *out, size_t n);
 // the same seed, must always produce the same pub.
 bool hal_ed25519_derive_pub(const uint8_t seed[32], uint8_t pub_out[32]);
 
+// Sign `message` (length `message_len`) with the Ed25519 keypair derived
+// from `seed`. Writes 64 bytes of signature into `sig_out`.
+// Returns true on success. Deterministic per RFC 8032: same (seed, message)
+// always produces the same signature.
+bool hal_ed25519_sign(const uint8_t seed[32],
+                      const uint8_t *message, size_t message_len,
+                      uint8_t sig_out[64]);
+
 #ifdef __cplusplus
 }
 #endif

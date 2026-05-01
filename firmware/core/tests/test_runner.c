@@ -83,6 +83,49 @@ extern void test_peer_sync_end_aborts_in_flight(void);
 extern void test_peer_sync_only_one_session_at_a_time(void);
 extern void test_peer_sync_envelope_fits_mtu(void);
 
+extern void test_ssid_scan_init_empty(void);
+extern void test_ssid_scan_random_bssid_filtered(void);
+extern void test_ssid_scan_add_basic(void);
+extern void test_ssid_scan_dedup_updates_in_place(void);
+extern void test_ssid_scan_full_replaces_weakest(void);
+extern void test_ssid_scan_full_rejects_weaker(void);
+extern void test_ssid_scan_sort_by_rssi(void);
+extern void test_ssid_scan_sort_stable_on_empty(void);
+extern void test_ssid_scan_bssids_differ(void);
+extern void test_ssid_scan_long_ssid_truncated(void);
+extern void test_ssid_scan_hidden_ssid(void);
+
+extern void test_encounters_init_empty(void);
+extern void test_encounters_record_one(void);
+extern void test_encounters_iter_oldest_first(void);
+extern void test_encounters_iter_order_preserved(void);
+extern void test_encounters_ring_evicts_oldest(void);
+extern void test_encounters_persists_across_init(void);
+extern void test_encounters_should_record_first(void);
+extern void test_encounters_should_record_dedup_same_set(void);
+extern void test_encounters_should_record_dedup_diff_set(void);
+extern void test_encounters_should_record_age_bypass(void);
+extern void test_encounters_record_signs_with_seed(void);
+extern void test_encounters_empty_scan_rejected(void);
+
+extern void test_scan_get_no_scan_yet(void);
+extern void test_scan_get_returns_observations(void);
+extern void test_scan_get_paginates_via_next_offset(void);
+extern void test_encounters_get_empty(void);
+extern void test_encounters_get_returns_records(void);
+extern void test_encounters_get_since_filter(void);
+extern void test_encounters_get_paginates_via_next_offset(void);
+
+extern void test_attestations_init_empty(void);
+extern void test_attestations_write_one(void);
+extern void test_attestations_too_big_rejected(void);
+extern void test_attestations_iter_oldest_first(void);
+extern void test_attestations_ring_evicts_oldest(void);
+extern void test_attestations_persist_across_init(void);
+
+extern void test_cmd_attestation_write_round_trip(void);
+extern void test_cmd_attestation_write_missing_blob(void);
+
 int main(void) {
     TEST_RUN(test_ls_empty);
     TEST_RUN(test_ls_with_files);
@@ -164,6 +207,50 @@ int main(void) {
     TEST_RUN(test_peer_sync_only_one_session_at_a_time);
     TEST_RUN(test_peer_sync_envelope_fits_mtu);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 73, test_failures);
+    TEST_RUN(test_ssid_scan_init_empty);
+    TEST_RUN(test_ssid_scan_random_bssid_filtered);
+    TEST_RUN(test_ssid_scan_add_basic);
+    TEST_RUN(test_ssid_scan_dedup_updates_in_place);
+    TEST_RUN(test_ssid_scan_full_replaces_weakest);
+    TEST_RUN(test_ssid_scan_full_rejects_weaker);
+    TEST_RUN(test_ssid_scan_sort_by_rssi);
+    TEST_RUN(test_ssid_scan_sort_stable_on_empty);
+    TEST_RUN(test_ssid_scan_bssids_differ);
+    TEST_RUN(test_ssid_scan_long_ssid_truncated);
+    TEST_RUN(test_ssid_scan_hidden_ssid);
+
+    TEST_RUN(test_encounters_init_empty);
+    TEST_RUN(test_encounters_record_one);
+    TEST_RUN(test_encounters_iter_oldest_first);
+    TEST_RUN(test_encounters_iter_order_preserved);
+    TEST_RUN(test_encounters_ring_evicts_oldest);
+    TEST_RUN(test_encounters_persists_across_init);
+    TEST_RUN(test_encounters_should_record_first);
+    TEST_RUN(test_encounters_should_record_dedup_same_set);
+    TEST_RUN(test_encounters_should_record_dedup_diff_set);
+    TEST_RUN(test_encounters_should_record_age_bypass);
+    TEST_RUN(test_encounters_record_signs_with_seed);
+    TEST_RUN(test_encounters_empty_scan_rejected);
+
+    TEST_RUN(test_scan_get_no_scan_yet);
+    TEST_RUN(test_scan_get_returns_observations);
+    TEST_RUN(test_scan_get_paginates_via_next_offset);
+
+    TEST_RUN(test_attestations_init_empty);
+    TEST_RUN(test_attestations_write_one);
+    TEST_RUN(test_attestations_too_big_rejected);
+    TEST_RUN(test_attestations_iter_oldest_first);
+    TEST_RUN(test_attestations_ring_evicts_oldest);
+    TEST_RUN(test_attestations_persist_across_init);
+
+    TEST_RUN(test_cmd_attestation_write_round_trip);
+    TEST_RUN(test_cmd_attestation_write_missing_blob);
+
+    TEST_RUN(test_encounters_get_empty);
+    TEST_RUN(test_encounters_get_returns_records);
+    TEST_RUN(test_encounters_get_since_filter);
+    TEST_RUN(test_encounters_get_paginates_via_next_offset);
+
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 111, test_failures);
     return test_failures;
 }

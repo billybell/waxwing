@@ -2,10 +2,13 @@
 
 #include "hw/ble.h"
 #include "hw/ble_client.h"
+#include "hw/ssid_scan_esp32.h"
 
 extern "C" {
+#include "core/attestations.h"
 #include "core/cborencode.h"
 #include "core/commands.h"
+#include "core/encounters.h"
 #include "core/filestore.h"
 #include "core/hal_crypto.h"
 #include "core/identity.h"
@@ -13,6 +16,8 @@ extern "C" {
 #include "core/mesh_state.h"
 #include "core/peer_sync.h"
 #include "core/peer_table.h"
+#include "core/ssid_scan.h"
+#include "core/ssid_scan_hal.h"
 }
 
 #include <esp_random.h>
@@ -343,6 +348,12 @@ void setup() {
 
     mesh_state_init(now_ms(), mesh_rng);
 
+    cardputer_ssid_scan_init();
+    encounters_init();
+    attestations_init();
+    std::printf("[main] encounters=%d attestations=%d\r\n",
+                encounters_count(), attestations_count());
+
     ble_start_advertising();
     render_status();
 }
@@ -353,6 +364,22 @@ void loop() {
     ble_client_process();
     process_pending_commands();
     apply_mesh_action(mesh_state_tick(now_ms()));
+
+    cardputer_ssid_scan_tick(now_ms(), mesh_state_phase() == MESH_CONNECTED);
+    if (g_identity_ready) {
+        ssid_scan_t scan;
+        static uint32_t s_last_scanned_ms = 0;
+        if (ssid_scan_hal_latest(&scan) && scan.scanned_ms != s_last_scanned_ms) {
+            s_last_scanned_ms = scan.scanned_ms;
+            if (encounters_should_record(&scan, scan.scanned_ms, 600000)) {
+                if (encounters_record(&scan, scan.scanned_ms,
+                                      g_identity.pub, g_identity.seed) == 0) {
+                    std::printf("[main] encounter recorded (%d total)\r\n",
+                                encounters_count());
+                }
+            }
+        }
+    }
 
     const bool      connected = ble_is_connected();
     const uint16_t  mtu       = connected ? ble_get_mtu() : 0;

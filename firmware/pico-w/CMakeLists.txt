@@ -25,14 +25,18 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
         src/hw/pico-w/diskio.c
         src/hw/pico-w/filestore_fatfs.c
         src/hw/pico-w/hal_crypto_pico.c
+        src/hw/pico-w/ssid_scan_pico.c
+        ../core/attestations.c
         ../core/cborencode.c
         ../core/cbor_decode.c
         ../core/commands.c
+        ../core/encounters.c
         ../core/identity.c
         ../core/manifest_counter.c
         ../core/mesh_state.c
         ../core/peer_sync.c
         ../core/peer_table.c
+        ../core/ssid_scan.c
 
          # FatFS (local copy with custom ffconf.h).
         src/thirdparty/fatfs/ff.c

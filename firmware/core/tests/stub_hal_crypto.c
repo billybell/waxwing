@@ -39,3 +39,18 @@ bool hal_ed25519_derive_pub(const uint8_t seed[32], uint8_t pub_out[32]) {
     }
     return true;
 }
+
+// Deterministic fake signature: first 32 bytes = seed XOR 0xA5, second 32
+// bytes = byte-by-byte sum of seed and message rotated. Tests only care
+// that (seed, message) → sig is reproducible and sensitive to the inputs.
+bool hal_ed25519_sign(const uint8_t seed[32],
+                      const uint8_t *message, size_t message_len,
+                      uint8_t sig_out[64]) {
+    for (int i = 0; i < 32; i++) sig_out[i] = seed[i] ^ 0xA5;
+    uint8_t acc = 0;
+    for (size_t i = 0; i < message_len; i++) acc += message[i];
+    for (int i = 0; i < 32; i++) {
+        sig_out[32 + i] = (uint8_t)(seed[i] + acc + (uint8_t)i);
+    }
+    return true;
+}

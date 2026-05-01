@@ -31,6 +31,14 @@ struct ScannerView: View {
                 ToolbarItem(placement: .primaryAction) {
                     scanButton
                 }
+                ToolbarItem(placement: .principal) {
+                    NavigationLink {
+                        MapView()
+                    } label: {
+                        Image(systemName: "map")
+                    }
+                    .accessibilityLabel("Map")
+                }
             }
             .sheet(isPresented: $showingSettings) {
                 AppSettingsView()

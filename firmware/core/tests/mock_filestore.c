@@ -6,7 +6,7 @@
 
 #define MAX_FILES 64
 #define MAX_SYSTEM_FILES 8
-#define SYSTEM_BLOB_MAX 256
+#define SYSTEM_BLOB_MAX 16384
 
 static char file_names[MAX_FILES][FS_MAX_NAME_LEN];
 static uint8_t file_data[MAX_FILES][1024]; // max inline data cap from commands.c

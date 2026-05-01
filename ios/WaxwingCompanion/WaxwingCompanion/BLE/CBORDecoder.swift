@@ -87,6 +87,19 @@ enum CBORValue: CustomStringConvertible {
         }
         return nil
     }
+
+    /// Access map by unsigned-int key. Used for compact records (encounter
+    /// records, future attestations) that key map fields with small uints
+    /// to save bytes on the wire.
+    func value(forIntKey key: UInt64) -> CBORValue? {
+        guard case .map(let pairs) = self else { return nil }
+        for (k, v) in pairs {
+            if case .unsignedInt(let n) = k, n == key {
+                return v
+            }
+        }
+        return nil
+    }
 }
 
 enum CBORError: Error, LocalizedError {
@@ -217,7 +230,7 @@ struct CBORDecoder {
         case 4: // Array
             let count = try readArgument(additionalInfo)
             var items: [CBORValue] = []
-            items.reserveCapacity(Int(count))
+            if count < 1024 { items.reserveCapacity(Int(count)) }
             for _ in 0..<count {
                 items.append(try decodeItem())
             }
@@ -226,7 +239,7 @@ struct CBORDecoder {
         case 5: // Map
             let count = try readArgument(additionalInfo)
             var pairs: [(CBORValue, CBORValue)] = []
-            pairs.reserveCapacity(Int(count))
+            if count < 1024 { pairs.reserveCapacity(Int(count)) }
             for _ in 0..<count {
                 let key = try decodeItem()
                 let value = try decodeItem()
