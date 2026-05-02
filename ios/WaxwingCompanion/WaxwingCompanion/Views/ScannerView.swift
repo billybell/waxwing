@@ -105,7 +105,7 @@ struct ScannerView: View {
                 Text("No Waxwing nodes found")
                     .font(.headline)
                     .foregroundStyle(.secondary)
-                Text("Make sure your Pico W is powered on\nand advertising nearby.")
+                Text("Make sure your Waxwing nodes are powered on\nand advertising nearby.")
                     .font(.subheadline)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)

@@ -33,6 +33,32 @@ final class AttestationsStore: ObservableObject {
         save()
     }
 
+    /// Set of signatures currently in the store. Used by the sync path
+    /// to figure out which records a node already has and which still
+    /// need pushing.
+    var signatureSet: Set<Data> {
+        Set(attestations.map(\.signature))
+    }
+
+    /// Merge an array of decoded attestations (dedup by signature).
+    /// Returns the number of records actually added. One save at the
+    /// end keeps the I/O cost flat regardless of batch size.
+    @discardableResult
+    func merge(_ incoming: [Attestation]) -> Int {
+        var existingSigs = signatureSet
+        var added = 0
+        for att in incoming where !existingSigs.contains(att.signature) {
+            attestations.append(att)
+            existingSigs.insert(att.signature)
+            added += 1
+        }
+        if added > 0 {
+            attestations.sort { $0.capturedAt < $1.capturedAt }
+            save()
+        }
+        return added
+    }
+
     private func save() {
         do {
             let data = try JSONEncoder().encode(attestations)

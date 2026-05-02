@@ -19,6 +19,7 @@ struct EncountersView: View {
     @State private var lastError: String?
     @State private var pullCount: Int = 0
     @State private var liveScan: LiveScan?
+    @State private var attestSyncStatus: String?
 
     private var nodeHex: String { node.identity?.tpkHex ?? "" }
     private var records: [EncounterRecord] {
@@ -110,6 +111,9 @@ struct EncountersView: View {
                 Spacer()
                 Text("\(attestations.attestations.count)")
                     .font(.caption.monospaced())
+            }
+            if let attestSyncStatus {
+                Text(attestSyncStatus).font(.caption).foregroundColor(.secondary)
             }
         }
     }
@@ -204,6 +208,17 @@ struct EncountersView: View {
                 self.pulling = false
                 self.pullCount = count
                 if let err { self.lastError = err }
+            }
+        }
+        bleManager.syncAttestations(node: node) { added, pushed, err in
+            DispatchQueue.main.async {
+                if let err {
+                    self.attestSyncStatus = "Sync error: \(err)"
+                } else if added == 0 && pushed == 0 {
+                    self.attestSyncStatus = "Attestations in sync"
+                } else {
+                    self.attestSyncStatus = "Pulled \(added), pushed \(pushed)"
+                }
             }
         }
     }

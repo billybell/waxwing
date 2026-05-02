@@ -21,6 +21,12 @@ struct Attestation: Codable, Identifiable, Equatable {
 
     var id: String { signature.map { String(format: "%02x", $0) }.joined() }
 
+    /// The "WX:AABBCCDD" fingerprint derived from the author's TPK.
+    var nodeName: String {
+        let prefix = author.prefix(4).map { String(format: "%02X", $0) }.joined()
+        return "WX:\(prefix)"
+    }
+
     /// Build a signed attestation. `signer` produces a 64-byte Ed25519
     /// signature over the canonical signed body. Throws whatever the
     /// signer throws.

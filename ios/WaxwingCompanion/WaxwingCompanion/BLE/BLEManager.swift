@@ -710,6 +710,188 @@ enum FileContentType {
         }
     }
 
+    /// Sync attestations with the connected node:
+    ///   1. Page through `attestations_get` (the node's self-ring — every
+    ///      attestation any companion has authored via this node).
+    ///   2. Issue `attest_query` against the current local-store BSSIDs,
+    ///      capped at the firmware's 12-bssid limit, so we also pick up
+    ///      anything that arrived in the cache-ring via peer-sync (or via
+    ///      another companion's attest_ingest push).
+    ///   3. Diff against AttestationsStore and `attest_ingest` everything
+    ///      the node didn't return — one blob per command, since each
+    ///      record is ~190 B and a single ATT MTU only fits one comfortably.
+    ///      Firmware dedups by exact bytes, so re-pushing is a no-op.
+    ///
+    /// Completion delivers (added, pushed, error). Either count can be 0.
+    func syncAttestations(node: WaxwingNode,
+                          completion: @escaping (Int, Int, String?) -> Void) {
+        enqueueOperation { [weak self] in
+            guard let self else { return }
+            self.fetchAttestationsPage(offset: 0, accumulated: []) { [weak self] pulledFromSelf, err in
+                guard let self else { return }
+                if let err {
+                    self.finishOperation()
+                    completion(0, 0, err)
+                    return
+                }
+                // Cache-ring sweep: query the union of BSSIDs we already care
+                // about. If the local store is empty there's nothing useful
+                // to ask for, so skip straight to the push pass.
+                let queryBssids = self.attestQueryBssids()
+                if queryBssids.isEmpty {
+                    self.completeAttestSync(pulled: pulledFromSelf,
+                                             cacheHits: [],
+                                             completion: completion)
+                    return
+                }
+                self.fetchAttestQueryPage(query: queryBssids,
+                                          offset: 0,
+                                          accumulated: []) { [weak self] cacheHits, qerr in
+                    guard let self else { return }
+                    if let qerr {
+                        // Cache-ring lookup is opportunistic — if it fails,
+                        // we still completed the self-ring pull and can push.
+                        print("[BLE] attest_query failed: \(qerr) — continuing without cache-ring")
+                    }
+                    self.completeAttestSync(pulled: pulledFromSelf,
+                                             cacheHits: cacheHits,
+                                             completion: completion)
+                }
+            }
+        }
+    }
+
+    /// Build the BSSID list for `attest_query`. Caps at firmware's
+    /// ATTEST_QUERY_MAX_BSSIDS (12) and prefers the most recently captured
+    /// — those are the locations the user is most likely to be near.
+    private func attestQueryBssids() -> [Data] {
+        let recent = AttestationsStore.shared.attestations
+            .sorted { $0.capturedAt > $1.capturedAt }
+        var seen = Set<Data>()
+        var out: [Data] = []
+        for att in recent {
+            for b in att.bssids {
+                guard b.count == 6, !seen.contains(b) else { continue }
+                seen.insert(b)
+                out.append(b)
+                if out.count >= 12 { return out }
+            }
+        }
+        return out
+    }
+
+    private func completeAttestSync(pulled: [Attestation],
+                                    cacheHits: [Attestation],
+                                    completion: @escaping (Int, Int, String?) -> Void) {
+        let merged = AttestationsStore.shared.merge(pulled + cacheHits)
+
+        // Anything the node returned (either ring) is already there; push
+        // the rest.
+        let nodeKnows = Set((pulled + cacheHits).map(\.signature))
+        let toPush = AttestationsStore.shared.attestations
+            .filter { !nodeKnows.contains($0.signature) }
+
+        if toPush.isEmpty {
+            self.finishOperation()
+            completion(merged, 0, nil)
+            return
+        }
+
+        self.pushAttestationsBlobs(toPush, index: 0, pushed: 0) { [weak self] pushed, perr in
+            guard let self else { return }
+            self.finishOperation()
+            completion(merged, pushed, perr)
+        }
+    }
+
+    private func fetchAttestationsPage(offset: UInt64,
+                                       accumulated: [Attestation],
+                                       completion: @escaping ([Attestation], String?) -> Void) {
+        var cmd: [String: Any] = ["cmd": "attestations_get"]
+        if offset > 0 { cmd["offset"] = offset }
+        sendFileCommand(cmd) { [weak self] response in
+            guard let self else { return }
+            if let error = response["error"]?.stringValue {
+                completion(accumulated, error)
+                return
+            }
+            guard case .array(let items)? = response["records"] else {
+                completion(accumulated, "invalid attestations response")
+                return
+            }
+            let page: [Attestation] = items.compactMap { item in
+                guard let blob = item.dataValue else { return nil }
+                return Attestation.parse(blob)
+            }
+            let merged = accumulated + page
+            if let next = response["next_offset"]?.uintValue {
+                self.fetchAttestationsPage(offset: next, accumulated: merged,
+                                            completion: completion)
+            } else {
+                completion(merged, nil)
+            }
+        }
+    }
+
+    private func fetchAttestQueryPage(query: [Data],
+                                      offset: UInt64,
+                                      accumulated: [Attestation],
+                                      completion: @escaping ([Attestation], String?) -> Void) {
+        var cmd: [String: Any] = ["cmd": "attest_query", "bssids": query]
+        if offset > 0 { cmd["offset"] = offset }
+        sendFileCommand(cmd) { [weak self] response in
+            guard let self else { return }
+            if let error = response["error"]?.stringValue {
+                completion(accumulated, error)
+                return
+            }
+            guard case .array(let items)? = response["blobs"] else {
+                completion(accumulated, "invalid attest_query response")
+                return
+            }
+            let page: [Attestation] = items.compactMap { item in
+                guard let blob = item.dataValue else { return nil }
+                return Attestation.parse(blob)
+            }
+            let merged = accumulated + page
+            if let next = response["next_offset"]?.uintValue {
+                self.fetchAttestQueryPage(query: query, offset: next,
+                                           accumulated: merged,
+                                           completion: completion)
+            } else {
+                completion(merged, nil)
+            }
+        }
+    }
+
+    private func pushAttestationsBlobs(_ atts: [Attestation],
+                                       index: Int,
+                                       pushed: Int,
+                                       completion: @escaping (Int, String?) -> Void) {
+        if index >= atts.count {
+            completion(pushed, nil)
+            return
+        }
+        let cmd: [String: Any] = [
+            "cmd": "attest_ingest",
+            "blobs": [atts[index].signedBytes]
+        ]
+        sendFileCommand(cmd) { [weak self] response in
+            guard let self else { return }
+            if let error = response["error"]?.stringValue {
+                // Stop on first hard error; report partial progress.
+                completion(pushed, error)
+                return
+            }
+            // stored=1 means new; dup=1 means already there. Both count
+            // toward "pushed successfully" from the caller's perspective.
+            let stored = Int(response["stored"]?.uintValue ?? 0)
+            self.pushAttestationsBlobs(atts, index: index + 1,
+                                        pushed: pushed + stored,
+                                        completion: completion)
+        }
+    }
+
     /// Pull all new encounter records from the connected node and merge
     /// into the local store. Filters server-side using the newest
     /// captured_at_ms we already have. Walks pages to completion.
@@ -1291,6 +1473,16 @@ extension BLEManager: CBPeripheralDelegate {
             node.identity = identity
             node.connectionState = .ready
             statusMessage = "Connected to \(node.displayName)"
+            // Fire-and-forget attestation sync so the map fills in even
+            // when the user never opens EncountersView. Errors are logged
+            // by the underlying queue; no UI plumbing needed here.
+            syncAttestations(node: node) { added, pushed, err in
+                if let err {
+                    print("[BLE] auto-sync attestations failed: \(err)")
+                } else {
+                    print("[BLE] auto-sync attestations: pulled=\(added) pushed=\(pushed)")
+                }
+            }
         } else {
             node.connectionState = .failed("Failed to decode identity (got \(data.count) bytes)")
         }

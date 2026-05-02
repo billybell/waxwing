@@ -89,7 +89,7 @@ struct MapView: View {
                 id: att.id,
                 coord: CLLocationCoordinate2D(latitude: coord.latitude,
                                               longitude: coord.longitude),
-                label: att.geohash,
+                label: att.nodeName,
                 systemImage: att.source == .wigle ? "globe" : "wifi",
                 tint: tintFor(source: att.source, underAttested: isUnder),
                 underAttested: isUnder
