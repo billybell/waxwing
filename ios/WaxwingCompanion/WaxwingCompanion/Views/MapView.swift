@@ -1,58 +1,54 @@
 import SwiftUI
 import MapKit
 
-/// Map of all attestations the user has authored. Each pin is at the
-/// center of the geohash-7 cell the attestation claims.
+/// Map of node-to-node encounters.
 ///
-/// k-anonymity gate: a geohash-6 cell with attestations from ≥3
-/// distinct authors is considered "verified" and shows in the default
-/// view. Cells below the threshold (typical for solo testing with one
-/// or two devices on the same identity) are hidden unless the user
-/// flips on "Show under-attested" — useful for confirming that local
-/// captures are landing in the store while walking around.
+/// An encounter record carries no location of its own — it is a signed
+/// list of BSSIDs one node observed at a moment in time. We anchor it
+/// to the map by joining its BSSIDs against the attestation store: any
+/// attestation (self-authored or pulled from a peer over BLE) whose
+/// BSSID list overlaps the encounter's BSSIDs gives us a geohash to
+/// pin at. Encounters with no matching BSSID stay invisible — there's
+/// nowhere honest to put them.
+///
+/// Multiple encounters that resolve to the same (encountering node,
+/// geohash) cell are coalesced into one pin, so a node that walks
+/// past the same Wi-Fi twice doesn't stack markers.
 struct MapView: View {
-    private static let kAnonAuthorThreshold = 3
-    private static let kAnonGeohashPrefix   = 6
-
-    @ObservedObject private var store = AttestationsStore.shared
-    @AppStorage("map.showUnderAttested") private var showUnderAttested = true
+    @ObservedObject private var attStore = AttestationsStore.shared
+    @ObservedObject private var encStore = EncountersStore.shared
     @State private var position: MapCameraPosition = .automatic
     @State private var selection: String?
 
     var body: some View {
         Map(position: $position, selection: $selection) {
-            ForEach(annotations) { ann in
-                Marker(ann.label, systemImage: ann.systemImage,
-                       coordinate: ann.coord)
-                    .tint(ann.tint)
-                    .tag(ann.id)
+            ForEach(pins) { p in
+                Marker(p.label,
+                       systemImage: "antenna.radiowaves.left.and.right",
+                       coordinate: p.coord)
+                    .tint(p.tint)
+                    .tag(p.id)
             }
         }
         .navigationTitle("Map")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Toggle(isOn: $showUnderAttested) {
-                    Label("Show under-attested",
-                          systemImage: "eye.slash")
-                }
-                .toggleStyle(.button)
-            }
-        }
-        .overlay(alignment: .bottom) {
-            statusOverlay
-        }
+        .task { encStore.loadAll() }
+        .overlay(alignment: .bottom) { statusOverlay }
     }
 
     @ViewBuilder
     private var statusOverlay: some View {
-        if store.attestations.isEmpty {
-            overlayText("No attestations yet — tap a node and use 'Tag this location' to add one.")
-        } else if annotations.isEmpty {
-            overlayText("\(store.attestations.count) attestation(s) — none meet the k-anonymity gate. Toggle 'Show under-attested' to see them.")
-        } else if showUnderAttested {
-            let verified = annotations.filter { !$0.underAttested }.count
-            let under    = annotations.count - verified
-            overlayText("Showing \(verified) verified + \(under) under-attested")
+        let totalEncounters = encStore.byNode.values.reduce(0) { $0 + $1.count }
+        let matched         = pins.reduce(0) { $0 + $1.count }
+        let unmatched       = totalEncounters - matched
+
+        if totalEncounters == 0 {
+            overlayText("No encounters pulled from any node yet — open Scans and tap refresh.")
+        } else if pins.isEmpty {
+            overlayText("\(totalEncounters) encounter(s) — none have BSSIDs that match a known attestation. Tag more locations to anchor them.")
+        } else if unmatched > 0 {
+            overlayText("\(pins.count) cell(s) plotted • \(unmatched) encounter(s) unmatched")
+        } else {
+            overlayText("\(pins.count) cell(s) plotted from \(matched) encounter(s)")
         }
     }
 
@@ -65,52 +61,75 @@ struct MapView: View {
             .padding()
     }
 
-    /// Set of geohash-6 prefixes that pass the k-anon gate.
-    private var verifiedGeohashPrefixes: Set<String> {
-        var byPrefix: [String: Set<Data>] = [:]
-        for att in store.attestations {
-            guard att.geohash.count >= Self.kAnonGeohashPrefix else { continue }
-            let pre = String(att.geohash.prefix(Self.kAnonGeohashPrefix))
-            byPrefix[pre, default: []].insert(att.author)
+    private var pins: [EncounterPin] {
+        // BSSID → geohash from the most recent attestation that covers
+        // that BSSID. Most-recent wins on ties so a moved AP relocates
+        // the encounter to its newer location.
+        var bssidGeohash: [Data: String] = [:]
+        var bssidWhen:    [Data: Date]   = [:]
+        for att in attStore.attestations {
+            for b in att.bssids {
+                if let prev = bssidWhen[b], prev >= att.capturedAt { continue }
+                bssidGeohash[b] = att.geohash
+                bssidWhen[b]    = att.capturedAt
+            }
         }
-        return Set(byPrefix.compactMap {
-            $0.value.count >= Self.kAnonAuthorThreshold ? $0.key : nil
-        })
-    }
 
-    private var annotations: [AttestationPin] {
-        let verified = verifiedGeohashPrefixes
-        return store.attestations.compactMap { att in
-            guard let coord = Geohash.decode(att.geohash) else { return nil }
-            let pre = String(att.geohash.prefix(Self.kAnonGeohashPrefix))
-            let isUnder = !verified.contains(pre)
-            if isUnder && !showUnderAttested { return nil }
-            return AttestationPin(
-                id: att.id,
+        // Bucket key: "<encountering node hex>|<geohash>".
+        struct Bucket {
+            let nodePub: Data
+            let geohash: String
+            var count: Int = 0
+        }
+        var buckets: [String: Bucket] = [:]
+
+        for (_, recs) in encStore.byNode {
+            for rec in recs {
+                // Best-fit geohash for this encounter = geohash that
+                // covers the most BSSIDs in the record.
+                var hits: [String: Int] = [:]
+                for b in rec.bssids {
+                    if let g = bssidGeohash[b] { hits[g, default: 0] += 1 }
+                }
+                guard let best = hits.max(by: { $0.value < $1.value })?.key else { continue }
+                let nodeHex = rec.nodePub.map { String(format: "%02x", $0) }.joined()
+                let key     = nodeHex + "|" + best
+                if buckets[key] == nil {
+                    buckets[key] = Bucket(nodePub: rec.nodePub, geohash: best)
+                }
+                buckets[key]!.count += 1
+            }
+        }
+
+        return buckets.values.compactMap { b -> EncounterPin? in
+            guard let coord = Geohash.decode(b.geohash) else { return nil }
+            let prefix = b.nodePub.prefix(4).map { String(format: "%02X", $0) }.joined()
+            let name   = "WX:\(prefix)"
+            return EncounterPin(
+                id: name + "@" + b.geohash,
                 coord: CLLocationCoordinate2D(latitude: coord.latitude,
                                               longitude: coord.longitude),
-                label: att.nodeName,
-                systemImage: att.source == .wigle ? "globe" : "wifi",
-                tint: tintFor(source: att.source, underAttested: isUnder),
-                underAttested: isUnder
+                label: b.count > 1 ? "\(name) ×\(b.count)" : name,
+                count: b.count,
+                tint: tintFor(node: b.nodePub)
             )
         }
     }
 
-    private func tintFor(source: Attestation.Source, underAttested: Bool) -> Color {
-        if underAttested { return .gray }
-        switch source {
-        case .wigle:    return .orange
-        case .self, .imported: return .blue
-        }
+    /// Deterministic per-node hue so two pins from the same node share
+    /// a color and different nodes are visually distinct.
+    private func tintFor(node: Data) -> Color {
+        let bytes = node.prefix(2)
+        let h = bytes.reduce(UInt16(0)) { ($0 << 8) | UInt16($1) }
+        let hue = Double(h) / Double(UInt16.max)
+        return Color(hue: hue, saturation: 0.75, brightness: 0.85)
     }
 }
 
-private struct AttestationPin: Identifiable {
+private struct EncounterPin: Identifiable {
     let id: String
     let coord: CLLocationCoordinate2D
     let label: String
-    let systemImage: String
+    let count: Int
     let tint: Color
-    let underAttested: Bool
 }

@@ -39,6 +39,17 @@ final class EncountersStore: ObservableObject {
         return records
     }
 
+    /// Hydrate every per-node file in the store directory. Used by the
+    /// map, which needs encounters from every paired node — not just the
+    /// one currently open in EncountersView.
+    func loadAll() {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: storeDirectory, includingPropertiesForKeys: nil)) ?? []
+        for url in urls where url.pathExtension == "json" {
+            _ = load(node: url.deletingPathExtension().lastPathComponent)
+        }
+    }
+
     /// Newest captured_at_ms already stored for the node, or 0 if none.
     /// Used as `since_ms` filter so the firmware skips records we already
     /// have.
