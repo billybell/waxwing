@@ -368,20 +368,10 @@ void loop() {
     apply_mesh_action(mesh_state_tick(now_ms()));
 
     cardputer_ssid_scan_tick(now_ms(), mesh_state_phase() == MESH_CONNECTED);
-    if (g_identity_ready) {
-        ssid_scan_t scan;
-        static uint32_t s_last_scanned_ms = 0;
-        if (ssid_scan_hal_latest(&scan) && scan.scanned_ms != s_last_scanned_ms) {
-            s_last_scanned_ms = scan.scanned_ms;
-            if (encounters_should_record(&scan, scan.scanned_ms, 600000)) {
-                if (encounters_record(&scan, scan.scanned_ms,
-                                      g_identity.pub, g_identity.seed) == 0) {
-                    std::printf("[main] encounter recorded (%d total)\r\n",
-                                encounters_count());
-                }
-            }
-        }
-    }
+    // M4 stage 9: solo SSID-self-attestation cadence retired. New
+    // encounters are produced exclusively by the two-party handshake
+    // on the peer characteristic (encounter_session.c). The v1 store
+    // stays readable via cmd_encounters_get for iOS until stage 8.
 
     const bool      connected = ble_is_connected();
     const uint16_t  mtu       = connected ? ble_get_mtu() : 0;

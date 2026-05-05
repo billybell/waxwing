@@ -294,26 +294,17 @@ int main(void) {
     printf("[main] encounters=%d attestations=%d cached=%d\r\n",
            encounters_count(), attestations_count(), attest_cache_count());
 
-    static uint32_t s_last_scanned_ms = 0;
-
     printf("[main] Ready, entering run loop...\r\n\r\n");
 
+    // M4 stage 9: solo SSID-self-attestation cadence retired. Encounters
+    // are now produced exclusively by the two-party handshake on the
+    // peer characteristic (encounter_session.c). The v1 store stays
+    // readable via cmd_encounters_get for iOS until stage 8 lands; we
+    // just stop adding new records to it.
     while (true) {
         ble_process();
         apply_mesh_action(mesh_state_tick(now_ms()));
         pico_ssid_scan_tick(now_ms(), mesh_state_phase() == MESH_CONNECTED);
-
-        const ssid_scan_t *scan = pico_ssid_scan_latest();
-        if (scan && scan->scanned_ms != s_last_scanned_ms) {
-            s_last_scanned_ms = scan->scanned_ms;
-            if (encounters_should_record(scan, scan->scanned_ms, 600000)) {
-                if (encounters_record(scan, scan->scanned_ms,
-                                      identity.pub, identity.seed) == 0) {
-                    printf("[main] encounter recorded (%d total)\r\n",
-                           encounters_count());
-                }
-            }
-        }
 
         led_update();
     }
