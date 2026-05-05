@@ -50,6 +50,13 @@ extern void test_counter_bump_writes_through(void);
 extern void test_counter_load_corrupted_blob(void);
 extern void test_counter_init_idempotent(void);
 
+extern void test_meeting_count_starts_at_zero(void);
+extern void test_meeting_count_bump_returns_new_value(void);
+extern void test_meeting_count_persists_across_init(void);
+extern void test_meeting_count_corrupted_blob_resets(void);
+extern void test_meeting_count_does_not_wrap_uint64_max(void);
+extern void test_meeting_count_persisted_bytes_are_le(void);
+
 extern void test_peer_unknown_connects(void);
 extern void test_peer_version_changed_connects(void);
 extern void test_peer_caught_up_skips_within_window(void);
@@ -228,6 +235,13 @@ int main(void) {
     TEST_RUN(test_counter_load_corrupted_blob);
     TEST_RUN(test_counter_init_idempotent);
 
+    TEST_RUN(test_meeting_count_starts_at_zero);
+    TEST_RUN(test_meeting_count_bump_returns_new_value);
+    TEST_RUN(test_meeting_count_persists_across_init);
+    TEST_RUN(test_meeting_count_corrupted_blob_resets);
+    TEST_RUN(test_meeting_count_does_not_wrap_uint64_max);
+    TEST_RUN(test_meeting_count_persisted_bytes_are_le);
+
     TEST_RUN(test_peer_unknown_connects);
     TEST_RUN(test_peer_version_changed_connects);
     TEST_RUN(test_peer_caught_up_skips_within_window);
@@ -359,6 +373,6 @@ int main(void) {
     TEST_RUN(test_cmd_attest_ingest_dedup_counts);
     TEST_RUN(test_cmd_attest_ingest_missing_blobs);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 160, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 166, test_failures);
     return test_failures;
 }

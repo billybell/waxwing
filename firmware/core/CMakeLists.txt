@@ -27,6 +27,7 @@ set(CORE_SOURCES
     encounters.c
     identity.c
     manifest_counter.c
+    meeting_count.c
     mesh_state.c
     peer_sync.c
     peer_table.c
@@ -46,6 +47,7 @@ set(TEST_SOURCES
     tests/test_encounters.c
     tests/test_identity.c
     tests/test_manifest_counter.c
+    tests/test_meeting_count.c
     tests/test_mesh_state.c
     tests/test_peer_sync.c
     tests/test_peer_table.c

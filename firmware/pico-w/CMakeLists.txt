@@ -37,6 +37,7 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
         ../core/encounters.c
         ../core/identity.c
         ../core/manifest_counter.c
+        ../core/meeting_count.c
         ../core/mesh_state.c
         ../core/peer_sync.c
         ../core/peer_table.c
