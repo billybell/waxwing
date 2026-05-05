@@ -22,6 +22,7 @@ set(CORE_SOURCES
     cborencode.c
     cbor_decode.c
     commands.c
+    encounter_record.c
     encounters.c
     identity.c
     manifest_counter.c
@@ -39,6 +40,7 @@ set(TEST_SOURCES
     tests/test_attestations.c
     tests/test_commands.c
     tests/test_commands_scan.c
+    tests/test_encounter_record.c
     tests/test_encounters.c
     tests/test_identity.c
     tests/test_manifest_counter.c

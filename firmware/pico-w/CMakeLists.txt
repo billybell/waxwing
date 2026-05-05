@@ -32,6 +32,7 @@ if(NOT WAXWING_HOST_BUILD AND DEFINED ENV{PICO_SDK_PATH})
         ../core/cborencode.c
         ../core/cbor_decode.c
         ../core/commands.c
+        ../core/encounter_record.c
         ../core/encounters.c
         ../core/identity.c
         ../core/manifest_counter.c

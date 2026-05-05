@@ -54,3 +54,9 @@ extern "C" bool hal_ed25519_sign(const uint8_t seed[32],
     crypto_wipe(secret_key, sizeof(secret_key));
     return true;
 }
+
+extern "C" bool hal_ed25519_verify(const uint8_t pub[32],
+                                   const uint8_t *message, size_t message_len,
+                                   const uint8_t sig[64]) {
+    return crypto_ed25519_check(sig, pub, message, message_len) == 0;
+}

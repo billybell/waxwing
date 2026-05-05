@@ -95,6 +95,19 @@ extern void test_ssid_scan_bssids_differ(void);
 extern void test_ssid_scan_long_ssid_truncated(void);
 extern void test_ssid_scan_hidden_ssid(void);
 
+extern void test_encounter_record_body_byte_for_byte_reproducible(void);
+extern void test_encounter_record_full_round_trip(void);
+extern void test_encounter_record_verify_happy_path(void);
+extern void test_encounter_record_verify_rejects_tampered_field(void);
+extern void test_encounter_record_verify_rejects_tampered_sig(void);
+extern void test_encounter_record_verify_rejects_swapped_sigs(void);
+extern void test_encounter_record_decode_rejects_wrong_version(void);
+extern void test_encounter_record_decode_rejects_oversized_bssids(void);
+extern void test_encounter_record_id_is_side_symmetric(void);
+extern void test_encounter_record_id_changes_with_nonce(void);
+extern void test_encounter_record_decode_rejects_truncated(void);
+extern void test_encounter_record_empty_bssids_allowed(void);
+
 extern void test_encounters_init_empty(void);
 extern void test_encounters_record_one(void);
 extern void test_encounters_iter_oldest_first(void);
@@ -249,6 +262,19 @@ int main(void) {
     TEST_RUN(test_ssid_scan_long_ssid_truncated);
     TEST_RUN(test_ssid_scan_hidden_ssid);
 
+    TEST_RUN(test_encounter_record_body_byte_for_byte_reproducible);
+    TEST_RUN(test_encounter_record_full_round_trip);
+    TEST_RUN(test_encounter_record_verify_happy_path);
+    TEST_RUN(test_encounter_record_verify_rejects_tampered_field);
+    TEST_RUN(test_encounter_record_verify_rejects_tampered_sig);
+    TEST_RUN(test_encounter_record_verify_rejects_swapped_sigs);
+    TEST_RUN(test_encounter_record_decode_rejects_wrong_version);
+    TEST_RUN(test_encounter_record_decode_rejects_oversized_bssids);
+    TEST_RUN(test_encounter_record_id_is_side_symmetric);
+    TEST_RUN(test_encounter_record_id_changes_with_nonce);
+    TEST_RUN(test_encounter_record_decode_rejects_truncated);
+    TEST_RUN(test_encounter_record_empty_bssids_allowed);
+
     TEST_RUN(test_encounters_init_empty);
     TEST_RUN(test_encounters_record_one);
     TEST_RUN(test_encounters_iter_oldest_first);
@@ -311,6 +337,6 @@ int main(void) {
     TEST_RUN(test_cmd_attest_ingest_dedup_counts);
     TEST_RUN(test_cmd_attest_ingest_missing_blobs);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 138, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 150, test_failures);
     return test_failures;
 }

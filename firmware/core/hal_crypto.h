@@ -37,6 +37,14 @@ bool hal_ed25519_sign(const uint8_t seed[32],
                       const uint8_t *message, size_t message_len,
                       uint8_t sig_out[64]);
 
+// Verify `sig` over `message` against the Ed25519 public key `pub`.
+// Returns true iff the signature is valid. Used by the verifier side of
+// the encounter handshake — both sides decode a peer-supplied record and
+// must be able to confirm the counterparty actually signed it.
+bool hal_ed25519_verify(const uint8_t pub[32],
+                        const uint8_t *message, size_t message_len,
+                        const uint8_t sig[64]);
+
 #ifdef __cplusplus
 }
 #endif

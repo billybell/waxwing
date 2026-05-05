@@ -54,3 +54,22 @@ bool hal_ed25519_sign(const uint8_t seed[32],
     }
     return true;
 }
+
+// Stub verifier. The stub's `derive_pub` is a bijection (`pub = seed XOR
+// 0x5A`), so we can recover the seed from the pub, recompute what `sign`
+// would have produced, and compare. This makes the stub round-trip
+// consistent without any real crypto.
+bool hal_ed25519_verify(const uint8_t pub[32],
+                        const uint8_t *message, size_t message_len,
+                        const uint8_t sig[64]) {
+    uint8_t recovered_seed[32];
+    for (int i = 0; i < 32; i++) recovered_seed[i] = pub[i] ^ 0x5A;
+    uint8_t expected[64];
+    if (!hal_ed25519_sign(recovered_seed, message, message_len, expected)) {
+        return false;
+    }
+    for (int i = 0; i < 64; i++) {
+        if (sig[i] != expected[i]) return false;
+    }
+    return true;
+}
