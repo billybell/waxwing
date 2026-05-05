@@ -112,6 +112,17 @@ extern void test_ssid_scan_bssids_differ(void);
 extern void test_ssid_scan_long_ssid_truncated(void);
 extern void test_ssid_scan_hidden_ssid(void);
 
+extern void test_peer_gate_companion_only_write_rejected(void);
+extern void test_peer_gate_companion_only_delete_rejected(void);
+extern void test_peer_gate_companion_only_scan_get_rejected(void);
+extern void test_peer_gate_companion_only_encounters_get_rejected(void);
+extern void test_peer_gate_companion_only_attestation_write_rejected(void);
+extern void test_peer_gate_companion_only_attestations_get_rejected(void);
+extern void test_peer_gate_ls_allowed(void);
+extern void test_peer_gate_storage_info_allowed(void);
+extern void test_peer_gate_unknown_cmd_still_unknown(void);
+extern void test_peer_gate_companion_mode_unchanged(void);
+
 extern void test_encounter_record_body_byte_for_byte_reproducible(void);
 extern void test_encounter_record_full_round_trip(void);
 extern void test_encounter_record_verify_happy_path(void);
@@ -307,6 +318,17 @@ int main(void) {
     TEST_RUN(test_ssid_scan_long_ssid_truncated);
     TEST_RUN(test_ssid_scan_hidden_ssid);
 
+    TEST_RUN(test_peer_gate_companion_only_write_rejected);
+    TEST_RUN(test_peer_gate_companion_only_delete_rejected);
+    TEST_RUN(test_peer_gate_companion_only_scan_get_rejected);
+    TEST_RUN(test_peer_gate_companion_only_encounters_get_rejected);
+    TEST_RUN(test_peer_gate_companion_only_attestation_write_rejected);
+    TEST_RUN(test_peer_gate_companion_only_attestations_get_rejected);
+    TEST_RUN(test_peer_gate_ls_allowed);
+    TEST_RUN(test_peer_gate_storage_info_allowed);
+    TEST_RUN(test_peer_gate_unknown_cmd_still_unknown);
+    TEST_RUN(test_peer_gate_companion_mode_unchanged);
+
     TEST_RUN(test_encounter_record_body_byte_for_byte_reproducible);
     TEST_RUN(test_encounter_record_full_round_trip);
     TEST_RUN(test_encounter_record_verify_happy_path);
@@ -393,6 +415,6 @@ int main(void) {
     TEST_RUN(test_cmd_attest_ingest_dedup_counts);
     TEST_RUN(test_cmd_attest_ingest_missing_blobs);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 175, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 185, test_failures);
     return test_failures;
 }

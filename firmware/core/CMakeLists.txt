@@ -42,6 +42,7 @@ set(TEST_SOURCES
     tests/test_attest_query.c
     tests/test_attestations.c
     tests/test_commands.c
+    tests/test_commands_peer_gate.c
     tests/test_commands_scan.c
     tests/test_encounter_record.c
     tests/test_encounter_session.c

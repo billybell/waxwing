@@ -783,8 +783,31 @@ static int cmd_attest_ingest(const uint8_t *body, const uint8_t *body_end,
 // Top-level dispatch
 // ---------------------------------------------------------------------------
 
-int commands_handle(const uint8_t *cmd_data, size_t cmd_len,
-                    uint8_t *out_buf, size_t out_max) {
+// True if `cmd_name` is permitted on the peer characteristic. Peer
+// sessions (post-encounter-handshake, M4 stage 6) get only the read
+// surface they need to drive peer_sync — list, read, read_meta,
+// storage_info — plus the attestation-exchange commands introduced
+// in M3. Anything that mutates local state or exposes companion-private
+// data (live SSID scans, the encounter store, attestations metadata)
+// stays companion-only.
+//
+// Defense in depth: even if a peer's firmware skips the encounter
+// handshake, the responder rejects mutating commands. Peers that need
+// to push data must do so via files/, not via cmd_write.
+static bool peer_allowed(const char *cmd_name) {
+    return strcmp(cmd_name, "ls")            == 0 ||
+           strcmp(cmd_name, "storage_info")  == 0 ||
+           strcmp(cmd_name, "read")          == 0 ||
+           strcmp(cmd_name, "read_start")    == 0 ||
+           strcmp(cmd_name, "read_chunk")    == 0 ||
+           strcmp(cmd_name, "read_meta")     == 0 ||
+           strcmp(cmd_name, "attest_query")  == 0 ||
+           strcmp(cmd_name, "attest_ingest") == 0;
+}
+
+int commands_handle_session(commands_session_kind_t kind,
+                            const uint8_t *cmd_data, size_t cmd_len,
+                            uint8_t *out_buf, size_t out_max) {
     if (!cmd_data || !out_buf || cmd_len == 0 || out_max < 32) return -1;
 
     cbor_item_t root;
@@ -799,6 +822,10 @@ int commands_handle(const uint8_t *cmd_data, size_t cmd_len,
     char cmd_name[24];
     if (!cbor_map_get_text(body, body_end, pc, "cmd", cmd_name, sizeof(cmd_name), NULL))
         return emit_error(out_buf, out_max, "missing cmd");
+
+    if (kind == COMMANDS_SESSION_PEER && !peer_allowed(cmd_name)) {
+        return emit_error(out_buf, out_max, "companion only");
+    }
 
     int rc;
     if      (strcmp(cmd_name, "ls") == 0)            rc = cmd_ls(body, body_end, pc, out_buf, out_max);
@@ -823,4 +850,10 @@ int commands_handle(const uint8_t *cmd_data, size_t cmd_len,
 
     if (rc < 0) rc = emit_error(out_buf, out_max, "internal error");
     return rc;
+}
+
+int commands_handle(const uint8_t *cmd_data, size_t cmd_len,
+                    uint8_t *out_buf, size_t out_max) {
+    return commands_handle_session(COMMANDS_SESSION_COMPANION,
+                                   cmd_data, cmd_len, out_buf, out_max);
 }
