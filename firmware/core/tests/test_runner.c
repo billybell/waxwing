@@ -57,6 +57,16 @@ extern void test_meeting_count_corrupted_blob_resets(void);
 extern void test_meeting_count_does_not_wrap_uint64_max(void);
 extern void test_meeting_count_persisted_bytes_are_le(void);
 
+extern void test_peer_ledger_starts_empty(void);
+extern void test_peer_ledger_first_contact_creates_entry(void);
+extern void test_peer_ledger_deltas_accumulate(void);
+extern void test_peer_ledger_meeting_count_does_not_decrease(void);
+extern void test_peer_ledger_persists_across_init(void);
+extern void test_peer_ledger_eviction_picks_lowest_meeting_count(void);
+extern void test_peer_ledger_set_rep_creates_entry(void);
+extern void test_peer_ledger_get_zeroes_out_on_miss(void);
+extern void test_peer_ledger_corrupted_blob_resets(void);
+
 extern void test_peer_unknown_connects(void);
 extern void test_peer_version_changed_connects(void);
 extern void test_peer_caught_up_skips_within_window(void);
@@ -242,6 +252,16 @@ int main(void) {
     TEST_RUN(test_meeting_count_does_not_wrap_uint64_max);
     TEST_RUN(test_meeting_count_persisted_bytes_are_le);
 
+    TEST_RUN(test_peer_ledger_starts_empty);
+    TEST_RUN(test_peer_ledger_first_contact_creates_entry);
+    TEST_RUN(test_peer_ledger_deltas_accumulate);
+    TEST_RUN(test_peer_ledger_meeting_count_does_not_decrease);
+    TEST_RUN(test_peer_ledger_persists_across_init);
+    TEST_RUN(test_peer_ledger_eviction_picks_lowest_meeting_count);
+    TEST_RUN(test_peer_ledger_set_rep_creates_entry);
+    TEST_RUN(test_peer_ledger_get_zeroes_out_on_miss);
+    TEST_RUN(test_peer_ledger_corrupted_blob_resets);
+
     TEST_RUN(test_peer_unknown_connects);
     TEST_RUN(test_peer_version_changed_connects);
     TEST_RUN(test_peer_caught_up_skips_within_window);
@@ -373,6 +393,6 @@ int main(void) {
     TEST_RUN(test_cmd_attest_ingest_dedup_counts);
     TEST_RUN(test_cmd_attest_ingest_missing_blobs);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 166, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 175, test_failures);
     return test_failures;
 }
