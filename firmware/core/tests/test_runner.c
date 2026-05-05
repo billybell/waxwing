@@ -108,6 +108,17 @@ extern void test_encounter_record_id_changes_with_nonce(void);
 extern void test_encounter_record_decode_rejects_truncated(void);
 extern void test_encounter_record_empty_bssids_allowed(void);
 
+extern void test_encounter_session_happy_path(void);
+extern void test_encounter_session_id_agrees_between_sides(void);
+extern void test_encounter_session_initiator_rejects_wrong_prefix(void);
+extern void test_encounter_session_responder_rejects_wrong_prefix(void);
+extern void test_encounter_session_initiator_rejects_bad_sig_b(void);
+extern void test_encounter_session_responder_rejects_bad_sig_a(void);
+extern void test_encounter_session_initiator_drop_after_propose(void);
+extern void test_encounter_session_responder_drop_after_accept(void);
+extern void test_encounter_session_responder_rejects_propose_wrong_type(void);
+extern void test_encounter_session_handle_before_start_is_error(void);
+
 extern void test_encounters_init_empty(void);
 extern void test_encounters_record_one(void);
 extern void test_encounters_iter_oldest_first(void);
@@ -275,6 +286,17 @@ int main(void) {
     TEST_RUN(test_encounter_record_decode_rejects_truncated);
     TEST_RUN(test_encounter_record_empty_bssids_allowed);
 
+    TEST_RUN(test_encounter_session_happy_path);
+    TEST_RUN(test_encounter_session_id_agrees_between_sides);
+    TEST_RUN(test_encounter_session_initiator_rejects_wrong_prefix);
+    TEST_RUN(test_encounter_session_responder_rejects_wrong_prefix);
+    TEST_RUN(test_encounter_session_initiator_rejects_bad_sig_b);
+    TEST_RUN(test_encounter_session_responder_rejects_bad_sig_a);
+    TEST_RUN(test_encounter_session_initiator_drop_after_propose);
+    TEST_RUN(test_encounter_session_responder_drop_after_accept);
+    TEST_RUN(test_encounter_session_responder_rejects_propose_wrong_type);
+    TEST_RUN(test_encounter_session_handle_before_start_is_error);
+
     TEST_RUN(test_encounters_init_empty);
     TEST_RUN(test_encounters_record_one);
     TEST_RUN(test_encounters_iter_oldest_first);
@@ -337,6 +359,6 @@ int main(void) {
     TEST_RUN(test_cmd_attest_ingest_dedup_counts);
     TEST_RUN(test_cmd_attest_ingest_missing_blobs);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 150, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 160, test_failures);
     return test_failures;
 }
