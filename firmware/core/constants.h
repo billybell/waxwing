@@ -95,7 +95,15 @@
 #define MESH_DWELL_MIN_MS            1000     // alternation lower bound
 #define MESH_DWELL_MAX_MS            5000     // alternation upper bound
 #define MESH_DWELL_JITTER_PCT          20     // ±20 % on top of dwell draw
-#define PEER_SUCCESS_BACKOFF_MS    600000     // 10 min after a clean sync
+// 6 h after a clean sync. M4 stage 7: every connection now produces an
+// encounter record on the peer characteristic, so a redundant connect
+// against an unchanged manifest costs both sides a signed-handshake
+// exchange. Six hours is long enough to suppress encounter-flooding when
+// two devices sit on a desk overnight, short enough to recover within
+// a day if a peer published new content while we were out of range.
+// Manifest *changes* still trigger an immediate connect (regardless of
+// elapsed time) — see peer_table_decide().
+#define PEER_SUCCESS_BACKOFF_MS  21600000     // 6 hours after a clean sync
 #define PEER_FAILED_BACKOFF_MS      30000     // 30 s after an error/disconnect
 #define PEER_BACKOFF_JITTER_PCT        20     // ±20 % so clocks don't realign
 #define PEER_TABLE_CAP                 32     // RAM-only LRU of seen peers

@@ -309,7 +309,13 @@ static int cmd_delete(const uint8_t *body, const uint8_t *body_end,
     if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
         return emit_error(out, out_max, "missing name");
     if (fs_delete(name) != 0) return emit_error(out, out_max, "not found");
-    manifest_counter_bump();    // /files/ changed → bump advertised hint
+    // Note: deletes do NOT bump the manifest counter (M4 stage 7). The
+    // counter is a "new content available" hint for peers, and our sync
+    // protocol never deletes — peers that already pulled the file keep
+    // it locally. Bumping here would just trigger redundant peer
+    // connects (and now redundant encounter handshakes) that propagate
+    // nothing useful. A subsequent re-add of the same name still bumps
+    // via cmd_write / cmd_write_end.
     return emit_ok(out, out_max);
 }
 

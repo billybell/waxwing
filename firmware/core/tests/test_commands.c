@@ -3,6 +3,7 @@
 #include "core/cborencode.h"
 #include "core/cbor_decode.h"
 #include "core/filestore.h"
+#include "core/manifest_counter.h"
 #include "mock_filestore.h"
 
 // ---------------------------------------------------------------------------
@@ -351,6 +352,36 @@ void test_delete_missing(void) {
                             "error", &err_val);
     TEST_ASSERT(ok && err_val.type == CBOR_TYPE_TSTR,
                 "delete missing returns error string");
+}
+
+
+// ---------------------------------------------------------------------------
+// test_delete_does_not_bump_manifest — M4 stage 7. Deletes are not
+// propagated by peer sync, so they shouldn't bump the manifest hint.
+// Bumping would just cause peers to reconnect (and now run an encounter
+// handshake) for nothing.
+// ---------------------------------------------------------------------------
+
+void test_delete_does_not_bump_manifest(void) {
+    mock_fs_clear();
+    manifest_counter_init();   // reload 0
+    mock_fs_add_entry("delme.txt", (const uint8_t *)"x", 1);
+
+    uint8_t before = manifest_counter_get();
+
+    uint8_t req[128], out[512];
+    uint8_t *p = req;
+    p += cborencode_map_header(p, 2);
+    p += cborencode_text_str(p, "cmd", 3);
+    p += cborencode_text_str(p, "delete", 6);
+    p += cborencode_text_str(p, "name", 4);
+    p += cborencode_text_str(p, "delme.txt", 9);
+    int n = commands_handle(req, (size_t)(p - req), out, sizeof(out));
+    TEST_ASSERT(n > 0, "delete returns response");
+
+    uint8_t after = manifest_counter_get();
+    TEST_ASSERT(before == after,
+                "cmd_delete must not bump manifest counter");
 }
 
 

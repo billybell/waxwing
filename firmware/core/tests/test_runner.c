@@ -12,6 +12,7 @@ extern void test_read_missing_file(void);
 extern void test_write_and_read_roundtrip(void);
 extern void test_delete(void);
 extern void test_delete_missing(void);
+extern void test_delete_does_not_bump_manifest(void);
 extern void test_unknown_command(void);
 extern void test_missing_name_field(void);
 extern void test_chunked_write_roundtrip(void);
@@ -218,6 +219,7 @@ int main(void) {
     TEST_RUN(test_write_and_read_roundtrip);
     TEST_RUN(test_delete);
     TEST_RUN(test_delete_missing);
+    TEST_RUN(test_delete_does_not_bump_manifest);
     TEST_RUN(test_unknown_command);
     TEST_RUN(test_missing_name_field);
     TEST_RUN(test_chunked_write_roundtrip);
@@ -415,6 +417,6 @@ int main(void) {
     TEST_RUN(test_cmd_attest_ingest_dedup_counts);
     TEST_RUN(test_cmd_attest_ingest_missing_blobs);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 185, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 186, test_failures);
     return test_failures;
 }
