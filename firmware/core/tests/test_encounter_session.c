@@ -327,3 +327,133 @@ void test_encounter_session_handle_before_start_is_error(void) {
     TEST_ASSERT(step == ENCOUNTER_STEP_ERROR,
                 "handle without a prior start refuses to advance");
 }
+
+// ---------------------------------------------------------------------------
+// Late-bind callback (responder lookup of per-peer state from PROPOSE)
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    bool       called;
+    uint8_t    seen_pub[ENCOUNTER_PUB_BYTES];
+    bool       return_hit;
+    int32_t    rep_to_return;
+    uint64_t   tx_to_return;
+    uint64_t   rx_to_return;
+    uint64_t   files_to_return;
+} late_bind_probe_t;
+
+static bool late_bind_probe_cb(const uint8_t peer_pub[ENCOUNTER_PUB_BYTES],
+                               encounter_per_peer_input_t *out, void *ctx) {
+    late_bind_probe_t *p = (late_bind_probe_t *)ctx;
+    p->called = true;
+    memcpy(p->seen_pub, peer_pub, ENCOUNTER_PUB_BYTES);
+    if (!p->return_hit) return false;
+    out->rep_of_peer                    = p->rep_to_return;
+    out->tx_bytes_to_peer_lifetime      = p->tx_to_return;
+    out->rx_bytes_from_peer_lifetime    = p->rx_to_return;
+    out->file_count_from_peer_lifetime  = p->files_to_return;
+    return true;
+}
+
+void test_encounter_session_responder_late_bind_populates_b_side(void) {
+    encounter_local_input_t me_a, me_b;
+    make_input(&me_a, SEED_A, 1, 0, 0x10);
+    make_input(&me_b, SEED_B, 1, 0, 0x20);
+
+    // Wipe the per-peer fields on B; they'll be filled by the callback.
+    me_b.rep_of_peer                    = 0;
+    me_b.tx_bytes_to_peer_lifetime      = 0;
+    me_b.rx_bytes_from_peer_lifetime    = 0;
+    me_b.file_count_from_peer_lifetime  = 0;
+
+    late_bind_probe_t probe = {0};
+    probe.return_hit       = true;
+    probe.rep_to_return    = 17;
+    probe.tx_to_return     = 0xAAAA;
+    probe.rx_to_return     = 0xBBBB;
+    probe.files_to_return  = 7;
+    me_b.late_bind         = late_bind_probe_cb;
+    me_b.late_bind_ctx     = &probe;
+
+    encounter_session_t init = {0}, resp = {0};
+    TEST_ASSERT(run_handshake(&init, &resp, &me_a, &me_b),
+                "handshake completes with late_bind");
+
+    TEST_ASSERT(probe.called, "responder invoked late_bind");
+    TEST_ASSERT(memcmp(probe.seen_pub, me_a.pub, ENCOUNTER_PUB_BYTES) == 0,
+                "late_bind saw the initiator's pub");
+
+    encounter_record_t rec_a, rec_b;
+    encounter_session_take_record(&init, &rec_a);
+    encounter_session_take_record(&resp, &rec_b);
+
+    TEST_ASSERT(rec_a.tx_bytes_b_to_a_lifetime    == 0xAAAA, "B's signed tx visible to A");
+    TEST_ASSERT(rec_a.rx_bytes_b_from_a_lifetime  == 0xBBBB, "B's signed rx visible to A");
+    TEST_ASSERT(rec_a.file_count_b_from_a_lifetime == 7,     "B's signed file count visible to A");
+    TEST_ASSERT(rec_a.rep_of_a_by_b               == 17,    "B's signed rep_of_a visible to A");
+
+    TEST_ASSERT(memcmp(&rec_a, &rec_b, sizeof(rec_a)) == 0,
+                "both sides converge on the late-bound record");
+    TEST_ASSERT(encounter_record_verify(&rec_a),
+                "late-bound record verifies (sig_b covers updated body)");
+}
+
+void test_encounter_session_responder_late_bind_miss_keeps_zeros(void) {
+    encounter_local_input_t me_a, me_b;
+    make_input(&me_a, SEED_A, 1, 0, 0x10);
+    make_input(&me_b, SEED_B, 1, 0, 0x20);
+
+    me_b.rep_of_peer                    = 0;
+    me_b.tx_bytes_to_peer_lifetime      = 0;
+    me_b.rx_bytes_from_peer_lifetime    = 0;
+    me_b.file_count_from_peer_lifetime  = 0;
+
+    late_bind_probe_t probe = {0};
+    probe.return_hit = false;  // simulate first contact / not in ledger
+    me_b.late_bind     = late_bind_probe_cb;
+    me_b.late_bind_ctx = &probe;
+
+    encounter_session_t init = {0}, resp = {0};
+    TEST_ASSERT(run_handshake(&init, &resp, &me_a, &me_b),
+                "handshake completes when late_bind returns false");
+    TEST_ASSERT(probe.called, "callback was still invoked");
+
+    encounter_record_t rec_b;
+    encounter_session_take_record(&resp, &rec_b);
+    TEST_ASSERT(rec_b.tx_bytes_b_to_a_lifetime     == 0, "no late_bind hit → tx stays 0");
+    TEST_ASSERT(rec_b.rx_bytes_b_from_a_lifetime   == 0, "no late_bind hit → rx stays 0");
+    TEST_ASSERT(rec_b.file_count_b_from_a_lifetime == 0, "no late_bind hit → file count stays 0");
+    TEST_ASSERT(rec_b.rep_of_a_by_b                == 0, "no late_bind hit → rep stays 0");
+    TEST_ASSERT(encounter_record_verify(&rec_b),
+                "first-contact record (zeros) still verifies");
+}
+
+void test_encounter_session_responder_late_bind_runs_after_prefix_check(void) {
+    encounter_local_input_t me_a, me_b;
+    make_input(&me_a, SEED_A, 1, 0, 0x10);
+    make_input(&me_b, SEED_B, 1, 0, 0x20);
+    uint8_t bogus[8] = {0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF};
+    memcpy(me_b.expected_peer_prefix, bogus, 8);
+
+    late_bind_probe_t probe = {0};
+    probe.return_hit = true;
+    probe.tx_to_return = 9999;
+    me_b.late_bind     = late_bind_probe_cb;
+    me_b.late_bind_ctx = &probe;
+
+    encounter_session_t init = {0}, resp = {0};
+    uint8_t buf_a[ENCOUNTER_MSG_MAX_BYTES];
+    uint8_t buf_b[ENCOUNTER_MSG_MAX_BYTES];
+    size_t n_a = 0, n_b = 0;
+
+    encounter_session_start(&init, ENCOUNTER_ROLE_INITIATOR, &me_a,
+                            buf_a, sizeof(buf_a), &n_a);
+    encounter_session_start(&resp, ENCOUNTER_ROLE_RESPONDER, &me_b,
+                            buf_b, sizeof(buf_b), &n_b);
+    encounter_step_t step = encounter_session_handle(&resp, buf_a, n_a,
+                                                      buf_b, sizeof(buf_b), &n_b);
+    TEST_ASSERT(step == ENCOUNTER_STEP_ERROR,
+                "responder rejects on prefix mismatch");
+    TEST_ASSERT(!probe.called,
+                "late_bind is skipped when the prefix check fails");
+}

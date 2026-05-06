@@ -113,21 +113,37 @@ static uint8_t resp_buf[512];
 // Encounter handshake helpers.
 // ============================================================
 
+// Late-bind callback for the responder path: looks up the now-known
+// peer pub in peer_ledger and copies its lifetime totals + reputation
+// into the per-peer struct. Returning false (no entry) leaves the
+// fields at zero, which encounter_session interprets as first contact.
+static bool peer_ledger_late_bind(const uint8_t peer_pub[ENCOUNTER_PUB_BYTES],
+                                  encounter_per_peer_input_t *out, void *ctx) {
+    (void)ctx;
+    peer_ledger_entry_t e;
+    if (!peer_ledger_get(peer_pub, &e)) return false;
+    out->rep_of_peer                    = e.my_rep_score;
+    out->tx_bytes_to_peer_lifetime      = e.tx_bytes_lifetime;
+    out->rx_bytes_from_peer_lifetime    = e.rx_bytes_lifetime;
+    out->file_count_from_peer_lifetime  = e.file_count_lifetime;
+    return true;
+}
+
 // Build the local input the encounter session needs from this node's
 // identity, current meeting count, and latest BSSID scan. `expected`
 // is the 8-byte TPK prefix we expect the peer to advertise (initiator
 // side); pass NULL on the responder side.
 //
-// On the initiator path we know the peer's prefix from the BLE
-// advertisement, so we look up peer_ledger by prefix and populate the
-// lifetime fields with what we already know about this peer. The
-// responder doesn't yet know the peer at start time and leaves those
-// fields at zero — refining that path requires a late-binding tweak
-// to encounter_session that's a separate follow-up. Genuinely-new
-// peers always carry zeros, which is the correct first-contact state.
+// Initiator path: we know the peer's prefix up front, so we look up
+// peer_ledger by prefix and bake the lifetime fields into `me`.
+// Responder path: we don't yet know the peer; we install a late_bind
+// callback that encounter_session invokes after PROPOSE arrives, with
+// the peer's full pub. Genuinely-new peers always carry zeros, which
+// is the correct first-contact state.
 //
-// `rep_of_peer` stays zero until a reputation system lands; that's
-// schema-reserved space.
+// `rep_of_peer` stays zero on the initiator path until a reputation
+// system lands; the responder's late_bind also surfaces it as zero
+// for now.
 static void build_local_input(encounter_local_input_t *me,
                               const uint8_t *expected) {
     memset(me, 0, sizeof(*me));
@@ -157,6 +173,9 @@ static void build_local_input(encounter_local_input_t *me,
             me->file_count_from_peer_lifetime = e.file_count_lifetime;
             me->rep_of_peer                    = e.my_rep_score;
         }
+    } else {
+        me->late_bind     = peer_ledger_late_bind;
+        me->late_bind_ctx = NULL;
     }
 }
 

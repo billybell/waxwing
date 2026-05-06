@@ -149,6 +149,9 @@ extern void test_encounter_session_initiator_drop_after_propose(void);
 extern void test_encounter_session_responder_drop_after_accept(void);
 extern void test_encounter_session_responder_rejects_propose_wrong_type(void);
 extern void test_encounter_session_handle_before_start_is_error(void);
+extern void test_encounter_session_responder_late_bind_populates_b_side(void);
+extern void test_encounter_session_responder_late_bind_miss_keeps_zeros(void);
+extern void test_encounter_session_responder_late_bind_runs_after_prefix_check(void);
 
 extern void test_encounters_init_empty(void);
 extern void test_encounters_record_one(void);
@@ -358,6 +361,9 @@ int main(void) {
     TEST_RUN(test_encounter_session_responder_drop_after_accept);
     TEST_RUN(test_encounter_session_responder_rejects_propose_wrong_type);
     TEST_RUN(test_encounter_session_handle_before_start_is_error);
+    TEST_RUN(test_encounter_session_responder_late_bind_populates_b_side);
+    TEST_RUN(test_encounter_session_responder_late_bind_miss_keeps_zeros);
+    TEST_RUN(test_encounter_session_responder_late_bind_runs_after_prefix_check);
 
     TEST_RUN(test_encounters_init_empty);
     TEST_RUN(test_encounters_record_one);
@@ -421,6 +427,6 @@ int main(void) {
     TEST_RUN(test_cmd_attest_ingest_dedup_counts);
     TEST_RUN(test_cmd_attest_ingest_missing_blobs);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 188, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 191, test_failures);
     return test_failures;
 }

@@ -376,8 +376,10 @@ encounter_step_t encounter_session_start(encounter_session_t *s,
         return ENCOUNTER_STEP_NEED_WRITE;
     }
 
-    // Responder waits for PROPOSE. Pre-populate B side.
-    fill_local_half(&s->rec, &s->me, /*is_b_side=*/true);
+    // Responder waits for PROPOSE. The B side of the record is filled
+    // in handle_responder_propose() so the late_bind callback (invoked
+    // there with the now-known peer pub) can refresh the per-peer
+    // lifetime fields before they're baked into the signed body.
     *out_len = 0;
     s->state = ST_INIT;
     return ENCOUNTER_STEP_NEED_READ;
@@ -436,6 +438,25 @@ static encounter_step_t handle_responder_propose(encounter_session_t *s,
         *out_len = 0;
         return ENCOUNTER_STEP_ERROR;
     }
+
+    // Now that we know pub_a, give the caller a chance to look up
+    // per-peer state (peer_ledger entry, reputation) and refresh the
+    // four pub-dependent fields. Failure or absence of the callback
+    // leaves the zero values from `me` intact (first-contact).
+    if (s->me.late_bind) {
+        encounter_per_peer_input_t pp;
+        memset(&pp, 0, sizeof(pp));
+        if (s->me.late_bind(s->rec.pub_a, &pp, s->me.late_bind_ctx)) {
+            s->me.rep_of_peer                    = pp.rep_of_peer;
+            s->me.tx_bytes_to_peer_lifetime      = pp.tx_bytes_to_peer_lifetime;
+            s->me.rx_bytes_from_peer_lifetime    = pp.rx_bytes_from_peer_lifetime;
+            s->me.file_count_from_peer_lifetime  = pp.file_count_from_peer_lifetime;
+        }
+    }
+
+    // Pre-populate the B side now (deferred from session_start) so the
+    // body we sign reflects any late-bound updates above.
+    fill_local_half(&s->rec, &s->me, /*is_b_side=*/true);
 
     uint8_t body[ENCOUNTER_BODY_MAX_BYTES];
     size_t  body_len = encounter_record_encode_body(&s->rec, body, sizeof(body));

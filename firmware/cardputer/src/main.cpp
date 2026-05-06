@@ -220,6 +220,20 @@ void process_pending_commands() {
 // Encounter handshake helpers (M4 stage 6).
 // ------------------------------------------------------------
 
+// Late-bind callback for the responder path — see the matching helper
+// in firmware/pico-w/src/hw/pico-w/main.c for the rationale.
+extern "C" bool peer_ledger_late_bind(const uint8_t peer_pub[ENCOUNTER_PUB_BYTES],
+                                      encounter_per_peer_input_t *out, void *ctx) {
+    (void)ctx;
+    peer_ledger_entry_t e;
+    if (!peer_ledger_get(peer_pub, &e)) return false;
+    out->rep_of_peer                    = e.my_rep_score;
+    out->tx_bytes_to_peer_lifetime      = e.tx_bytes_lifetime;
+    out->rx_bytes_from_peer_lifetime    = e.rx_bytes_lifetime;
+    out->file_count_from_peer_lifetime  = e.file_count_lifetime;
+    return true;
+}
+
 void build_local_input(encounter_local_input_t *me, const uint8_t *expected) {
     std::memset(me, 0, sizeof(*me));
     std::memcpy(me->pub,  g_identity.pub,  ENCOUNTER_PUB_BYTES);
@@ -240,10 +254,10 @@ void build_local_input(encounter_local_input_t *me, const uint8_t *expected) {
         }
     }
 
-    // Initiator path knows the 8-byte peer prefix; populate the
-    // lifetime fields and rep score from peer_ledger if we've met this
-    // peer before. Responder side leaves them zero until the late-bind
-    // session-API refinement.
+    // Initiator: we know the 8-byte peer prefix, so populate lifetime
+    // fields up-front from peer_ledger. Responder: install a late_bind
+    // callback that encounter_session invokes after PROPOSE arrives,
+    // once we know the peer's full pub.
     if (expected) {
         peer_ledger_entry_t e;
         if (peer_ledger_get_by_prefix(expected, &e)) {
@@ -252,6 +266,9 @@ void build_local_input(encounter_local_input_t *me, const uint8_t *expected) {
             me->file_count_from_peer_lifetime = e.file_count_lifetime;
             me->rep_of_peer                    = e.my_rep_score;
         }
+    } else {
+        me->late_bind     = peer_ledger_late_bind;
+        me->late_bind_ctx = nullptr;
     }
 }
 

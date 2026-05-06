@@ -45,6 +45,30 @@ typedef enum {
 // driver can reuse a single 256-byte staging buffer for both flows.
 #define ENCOUNTER_MSG_MAX_BYTES   256
 
+// Per-peer fields whose values depend on the peer's identity. The
+// responder doesn't know the peer at start time, so it can leave the
+// matching members of `encounter_local_input_t` at zero and supply a
+// `late_bind` callback (below) that fills these in once PROPOSE arrives
+// and the peer's pub is known.
+typedef struct {
+    int32_t  rep_of_peer;
+    uint64_t tx_bytes_to_peer_lifetime;
+    uint64_t rx_bytes_from_peer_lifetime;
+    uint64_t file_count_from_peer_lifetime;
+} encounter_per_peer_input_t;
+
+// Optional callback invoked by the responder after PROPOSE arrives and
+// before ACCEPT is signed, with the peer's now-known 32-byte pub. The
+// callback writes a per-peer state block (e.g., from peer_ledger) into
+// `*out`. Returning false leaves the responder's lifetime fields at
+// zero — correct first-contact semantics.
+//
+// Initiators ignore this field; they already know the peer's prefix at
+// start time and populate the lifetime fields directly.
+typedef bool (*encounter_late_bind_fn)(const uint8_t peer_pub[ENCOUNTER_PUB_BYTES],
+                                       encounter_per_peer_input_t *out,
+                                       void *ctx);
+
 // Inputs the local side contributes to its half of the record. Caller
 // fills these out before calling encounter_session_start. Numeric fields
 // are read once (copied into the session) and may freely change after
@@ -67,6 +91,9 @@ typedef struct {
     uint64_t tx_bytes_to_peer_lifetime;
     uint64_t rx_bytes_from_peer_lifetime;
     uint64_t file_count_from_peer_lifetime;
+    // Responder-only late-binding hook. Ignored for initiators.
+    encounter_late_bind_fn late_bind;
+    void                  *late_bind_ctx;
 } encounter_local_input_t;
 
 // Opaque-by-convention. Callers should treat the fields as private and
