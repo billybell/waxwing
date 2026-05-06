@@ -947,6 +947,162 @@ enum FileContentType {
         }
     }
 
+    // MARK: - v2 encounter pull (M4 stage 8b)
+    //
+    // Walks /files/ for `enc_*.cbor` blobs, fetches each, parses as a
+    // verifiable v2 encounter record, and merges into EncountersStore2.
+    // Files that don't parse or whose signatures fail to verify are
+    // silently dropped — same posture as the v1 path.
+    //
+    // The completion handler reports how many *new* records were added
+    // (parsed, verified, and not already in the store), and the first
+    // error encountered if any. One enqueueOperation slot covers the
+    // entire ls + read sequence so we never interleave with other
+    // BLE operations in flight.
+    func pullV2Encounters(completion: @escaping (Int, String?) -> Void) {
+        enqueueOperation { [weak self] in
+            guard let self else { return }
+            self.lsAllEncounterCandidates(offset: 0, accumulated: []) {
+                [weak self] candidates, lsError in
+                guard let self else { return }
+                if let lsError = lsError {
+                    self.finishOperation()
+                    completion(0, lsError)
+                    return
+                }
+                self.fetchV2EncountersSequentially(
+                    candidates: candidates, index: 0, addedCount: 0
+                ) { [weak self] added, err in
+                    self?.finishOperation()
+                    completion(added, err)
+                }
+            }
+        }
+    }
+
+    /// Walk `cmd_ls` pages, accumulating filenames that look like v2
+    /// encounter records. Filenames are produced by the firmware as
+    /// `enc_<16-hex>.cbor` (firmware/pico-w/src/hw/pico-w/main.c
+    /// on_encounter_done).
+    private func lsAllEncounterCandidates(offset: Int,
+                                           accumulated: [String],
+                                           completion: @escaping ([String], String?) -> Void) {
+        let cmd: [String: Any] = ["cmd": "ls", "offset": offset]
+        sendFileCommand(cmd) { [weak self] response in
+            guard let self else { return }
+            if let error = response["error"]?.stringValue {
+                completion(accumulated, error)
+                return
+            }
+            guard case .array(let items)? = response["files"] else {
+                completion(accumulated, "invalid ls response")
+                return
+            }
+            let names: [String] = items.compactMap { item in
+                guard let name = item["name"]?.stringValue else { return nil }
+                return (name.hasPrefix("enc_") && name.hasSuffix(".cbor"))
+                    ? name : nil
+            }
+            let merged = accumulated + names
+            if let next = response["next_offset"]?.uintValue {
+                self.lsAllEncounterCandidates(offset: Int(next),
+                                               accumulated: merged,
+                                               completion: completion)
+            } else {
+                completion(merged, nil)
+            }
+        }
+    }
+
+    /// Sequentially fetch each candidate file, parse it, and merge into
+    /// EncountersStore2. Recursion advances the index; the base case
+    /// reports `added` upward. Files that fail to read, parse, or verify
+    /// are skipped without aborting the whole pull.
+    private func fetchV2EncountersSequentially(candidates: [String],
+                                                index: Int, addedCount: Int,
+                                                completion: @escaping (Int, String?) -> Void) {
+        if index >= candidates.count {
+            completion(addedCount, nil)
+            return
+        }
+        let name = candidates[index]
+        readEncounterFile(name: name) { [weak self] data in
+            guard let self else { return }
+            var added = addedCount
+            if let data = data, let rec = EncounterRecord2.parse(data) {
+                if EncountersStore2.shared.add(rec) {
+                    added += 1
+                }
+            }
+            self.fetchV2EncountersSequentially(candidates: candidates,
+                                                index: index + 1,
+                                                addedCount: added,
+                                                completion: completion)
+        }
+    }
+
+    /// read_start + read_chunk loop *without* an outer enqueueOperation
+    /// — pullV2Encounters already holds the slot. Mirrors readFileChunked
+    /// minus the enqueue/finish bookkeeping.
+    private func readEncounterFile(name: String,
+                                    completion: @escaping (Data?) -> Void) {
+        sendFileCommand(["cmd": "read_start", "name": name]) {
+            [weak self] response in
+            guard let self else { return }
+            if response["error"]?.stringValue != nil {
+                completion(nil)
+                return
+            }
+            guard let totalSize = response["size"]?.uintValue else {
+                // Tiny files: some firmware paths return data inline.
+                completion(response["data"]?.dataValue)
+                return
+            }
+            let total = Int(totalSize)
+            if total == 0 {
+                completion(Data())
+                return
+            }
+            self.readEncounterChunks(name: name, accumulated: Data(),
+                                      offset: 0, totalSize: total,
+                                      completion: completion)
+        }
+    }
+
+    private func readEncounterChunks(name: String, accumulated: Data,
+                                      offset: Int, totalSize: Int,
+                                      completion: @escaping (Data?) -> Void) {
+        if offset >= totalSize {
+            completion(accumulated)
+            return
+        }
+        let chunkSize    = safeChunkSize()
+        let requestSize  = min(chunkSize, totalSize - offset)
+        let cmd: [String: Any] = [
+            "cmd":    "read_chunk",
+            "name":   name,
+            "offset": offset,
+            "size":   requestSize,
+        ]
+        sendFileCommand(cmd) { [weak self] response in
+            guard let self else { return }
+            if response["error"]?.stringValue != nil {
+                completion(nil)
+                return
+            }
+            guard let chunk = response["data"]?.dataValue, !chunk.isEmpty else {
+                completion(nil)
+                return
+            }
+            var merged = accumulated
+            merged.append(chunk)
+            self.readEncounterChunks(name: name, accumulated: merged,
+                                      offset: offset + chunk.count,
+                                      totalSize: totalSize,
+                                      completion: completion)
+        }
+    }
+
     /// Delete a file on the connected node.
     func deleteFile(name: String, completion: ((Bool) -> Void)? = nil) {
         enqueueOperation { [weak self] in

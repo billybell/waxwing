@@ -210,6 +210,18 @@ struct EncountersView: View {
                 if let err { self.lastError = err }
             }
         }
+        // M4 stage 8b: pull v2 encounter records (signed two-party
+        // handshake artefacts) from /files/enc_*.cbor. New records
+        // surface on the map alongside any v1 encounters still on
+        // the device. Errors are logged but don't surface in the UI
+        // — the v1 path covers the primary status field.
+        bleManager.pullV2Encounters { added, err in
+            if let err {
+                print("[EncountersView] pullV2Encounters: \(err)")
+            } else if added > 0 {
+                print("[EncountersView] pulled \(added) v2 encounter(s)")
+            }
+        }
         bleManager.syncAttestations(node: node) { added, pushed, err in
             DispatchQueue.main.async {
                 if let err {
