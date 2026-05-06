@@ -32,9 +32,14 @@ static const uint8_t WAXWING_UUID_LE[16] = {
     0x00, 0x47, 0x4E, 0x49, 0x00, 0x58, 0x57, 0xCE,
 };
 
-// File Command (W) and File Response (N) characteristic UUIDs (big-endian).
+// File Command (W) / Peer Command (W, M4) / File Response (N) characteristic
+// UUIDs (big-endian).
 static const uint8_t CHAR_FILE_COMMAND_BE[16] = {
     0xCE, 0x57, 0x58, 0x0D, 0x49, 0x4E, 0x47, 0x00,
+    0x80, 0x00, 0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB,
+};
+static const uint8_t CHAR_PEER_COMMAND_BE[16] = {
+    0xCE, 0x57, 0x58, 0x0F, 0x49, 0x4E, 0x47, 0x00,
     0x80, 0x00, 0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB,
 };
 static const uint8_t CHAR_FILE_RESPONSE_BE[16] = {
@@ -61,11 +66,19 @@ static struct {
     client_state_t state;
     hci_con_handle_t conn_handle;
     gatt_client_service_t service;
-    gatt_client_characteristic_t char_cmd;
+    gatt_client_characteristic_t char_file_cmd;
+    gatt_client_characteristic_t char_peer_cmd;
     gatt_client_characteristic_t char_resp;
     gatt_client_notification_t   notif_listener;
-    int    chars_seen;     /* how many target characteristics we've
-                              picked up so far in the current discovery */
+
+    /* Tracks which command-side characteristics the responder exposes.
+     * The encounter handshake (M4 stage 6) uses peer_cmd when present;
+     * older firmware that only has file_cmd falls back to that channel
+     * with no handshake. file_cmd + resp are required; peer_cmd is
+     * optional. */
+    bool   has_file_cmd;
+    bool   has_peer_cmd;
+    bool   has_resp;
 
     ble_client_on_peer_seen_cb     on_peer_seen;
     ble_client_on_connected_cb     on_connected;
@@ -150,15 +163,26 @@ bool ble_client_send_command(const uint8_t *data, size_t len) {
                (int)g_client.state, g_client.conn_handle);
         return false;
     }
+    // Prefer the peer characteristic (M4 stage 6) when the responder
+    // exposes it. Older firmware without peer_cmd falls back to
+    // file_cmd, which still works for legacy peer_sync (no encounter
+    // handshake involved). Once both platforms migrate, we'll drop the
+    // file_cmd fallback for peer-mode connections.
+    uint16_t target = g_client.has_peer_cmd
+        ? g_client.char_peer_cmd.value_handle
+        : g_client.char_file_cmd.value_handle;
     uint8_t status = gatt_client_write_value_of_characteristic_without_response(
-        g_client.conn_handle,
-        g_client.char_cmd.value_handle,
+        g_client.conn_handle, target,
         (uint16_t)len, (uint8_t *)data);
     if (status != ERROR_CODE_SUCCESS) {
         printf("[ble_client] write failed: status=0x%02x\r\n", status);
         return false;
     }
     return true;
+}
+
+bool ble_client_uses_peer_characteristic(void) {
+    return g_client.has_peer_cmd;
 }
 
 void ble_client_disconnect(void) {
@@ -285,7 +309,9 @@ static void hci_event_handler(uint8_t packet_type, uint16_t channel,
             g_client.conn_handle =
                 hci_subevent_le_connection_complete_get_connection_handle(packet);
             g_client.state = CLIENT_DISCOVERING_SERVICE;
-            g_client.chars_seen = 0;
+            g_client.has_file_cmd = false;
+            g_client.has_peer_cmd = false;
+            g_client.has_resp     = false;
             printf("[ble_client] connected, handle=0x%04x — discovering\r\n",
                    g_client.conn_handle);
             gatt_client_discover_primary_services_by_uuid128(
@@ -324,11 +350,14 @@ static void gatt_client_event_handler(uint8_t packet_type, uint16_t channel,
             gatt_client_characteristic_t c;
             gatt_event_characteristic_query_result_get_characteristic(packet, &c);
             if (memcmp(c.uuid128, CHAR_FILE_COMMAND_BE, 16) == 0) {
-                g_client.char_cmd = c;
-                g_client.chars_seen++;
+                g_client.char_file_cmd = c;
+                g_client.has_file_cmd  = true;
+            } else if (memcmp(c.uuid128, CHAR_PEER_COMMAND_BE, 16) == 0) {
+                g_client.char_peer_cmd = c;
+                g_client.has_peer_cmd  = true;
             } else if (memcmp(c.uuid128, CHAR_FILE_RESPONSE_BE, 16) == 0) {
                 g_client.char_resp = c;
-                g_client.chars_seen++;
+                g_client.has_resp  = true;
             }
             break;
         }
@@ -351,13 +380,17 @@ static void gatt_client_event_handler(uint8_t packet_type, uint16_t channel,
                     break;
 
                 case CLIENT_DISCOVERING_CHARS:
-                    if (g_client.chars_seen < 2) {
-                        printf("[ble_client] missing characteristics "
-                               "(saw %d/2); disconnecting\r\n",
-                               g_client.chars_seen);
+                    if (!g_client.has_file_cmd || !g_client.has_resp) {
+                        printf("[ble_client] missing required chars "
+                               "(file_cmd=%d resp=%d); disconnecting\r\n",
+                               (int)g_client.has_file_cmd,
+                               (int)g_client.has_resp);
                         ble_client_disconnect();
                         break;
                     }
+                    printf("[ble_client] discovered chars: file_cmd=1 "
+                           "peer_cmd=%d resp=1\r\n",
+                           (int)g_client.has_peer_cmd);
                     g_client.state = CLIENT_SUBSCRIBING;
                     gatt_client_listen_for_characteristic_value_updates(
                         &g_client.notif_listener,

@@ -19,5 +19,17 @@ CHARACTERISTIC, CE575801-494E-4700-8000-00805F9B34FB, READ | DYNAMIC,
 // command. iOS still uses Write Request via .withResponse.
 CHARACTERISTIC, CE57580D-494E-4700-8000-00805F9B34FB, WRITE | WRITE_WITHOUT_RESPONSE | DYNAMIC,
 
-// File Response - READ | NOTIFY (matches MicroPython CHAR_FILE_RESPONSE)
+// File Response - READ | NOTIFY (matches MicroPython CHAR_FILE_RESPONSE).
+// Used for both companion and peer responses; the connection's session
+// kind (companion vs peer) is tracked by which command characteristic
+// the request arrived on.
 CHARACTERISTIC, CE57580E-494E-4700-8000-00805F9B34FB, READ | NOTIFY | DYNAMIC,
+
+// Peer Command - M4 stage 6. Writes here are gated by the encounter
+// handshake (encounter_session.{h,c}) before any other command runs.
+// Same WRITE | WRITE_WITHOUT_RESPONSE properties as File Command so
+// peer central code can use Write Without Response for the handshake
+// and subsequent peer_sync commands. Old peers without this
+// characteristic fall back to writing File Command — backward-compat
+// with pre-M4 firmware.
+CHARACTERISTIC, CE57580F-494E-4700-8000-00805F9B34FB, WRITE | WRITE_WITHOUT_RESPONSE | DYNAMIC,

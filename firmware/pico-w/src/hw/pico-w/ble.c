@@ -42,9 +42,17 @@ static bool      g_notif_enabled = false;
 uint8_t  waxwing_identity_data[BLE_MAX_DATA_SIZE];
 size_t   waxwing_identity_len = 0;
 
-// File Command buffer - receives raw data from central
+// File Command buffer - receives raw data from central (companion path)
 static uint8_t g_file_cmd_buf[BLE_MAX_DATA_SIZE];
 static size_t  g_file_cmd_len = 0;
+
+// Peer Command buffer - receives raw data from a peer central (M4
+// stage 6). Separate from the companion buffer so a long-write
+// reassembly on one characteristic can't be corrupted by a stray
+// fragment on the other (in practice we only ever talk to one central
+// at a time, but the separation is the cheap defensive move).
+static uint8_t g_peer_cmd_buf[BLE_MAX_DATA_SIZE];
+static size_t  g_peer_cmd_len = 0;
 
 // File Response buffer - written by ble_send_file_response, sent via notify
 static uint8_t g_file_resp_buf[BLE_MAX_DATA_SIZE];
@@ -64,6 +72,7 @@ static bool    g_advertising_started = false;
 static ble_on_connect_cb    g_on_connect_cb      = NULL;
 static ble_on_disconnect_cb g_on_disconnect_cb = NULL;
 static ble_on_write_cb      g_on_write_cb        = NULL;
+static ble_on_write_cb      g_on_peer_write_cb   = NULL;
 
 // BTstack packet handler registration
 static btstack_packet_callback_registration_t g_hci_event_callback_reg;
@@ -328,6 +337,48 @@ static int att_write_cb(hci_con_handle_t conn_handle, uint16_t att_handle,
             }
             break;
 
+        case ATT_CHARACTERISTIC_CE57580F_494E_4700_8000_00805F9B34FB_01_VALUE_HANDLE:
+            // Peer Command write. Same long-write reassembly as File
+            // Command but routes to g_on_peer_write_cb so the encounter
+            // handshake driver in main.c sees these bytes separately.
+            switch (transaction_mode) {
+                case ATT_TRANSACTION_MODE_NONE:
+                    if (buffer_size > 0 && buffer_size <= BLE_MAX_DATA_SIZE) {
+                        memcpy(g_peer_cmd_buf, buffer, buffer_size);
+                        g_peer_cmd_len = buffer_size;
+                        if (g_on_peer_write_cb != NULL) {
+                            g_on_peer_write_cb(g_peer_cmd_buf, g_peer_cmd_len);
+                        }
+                    }
+                    break;
+
+                case ATT_TRANSACTION_MODE_ACTIVE: {
+                    size_t end = (size_t)offset + (size_t)buffer_size;
+                    if (end <= BLE_MAX_DATA_SIZE) {
+                        memcpy(g_peer_cmd_buf + offset, buffer, buffer_size);
+                        if (end > g_peer_cmd_len) g_peer_cmd_len = end;
+                    } else {
+                        printf("[ble] peer long-write fragment (%u@%u) overflows %u-byte buffer\r\n",
+                               buffer_size, offset, (unsigned)BLE_MAX_DATA_SIZE);
+                        g_peer_cmd_len = 0;
+                    }
+                    break;
+                }
+
+                case ATT_TRANSACTION_MODE_EXECUTE:
+                    if (g_peer_cmd_len > 0 && g_on_peer_write_cb != NULL) {
+                        g_on_peer_write_cb(g_peer_cmd_buf, g_peer_cmd_len);
+                    }
+                    g_peer_cmd_len = 0;
+                    break;
+
+                case ATT_TRANSACTION_MODE_CANCEL:
+                default:
+                    g_peer_cmd_len = 0;
+                    break;
+            }
+            break;
+
         default:
             break;
     }
@@ -346,6 +397,9 @@ static int att_write_cb(hci_con_handle_t conn_handle, uint16_t att_handle,
 static void clear_cccd(void) {
       // Also reset characteristic value to prevent stale data on reconnect
     g_file_resp_len = 0;
+    // Drop any in-flight peer command long-write fragment so the next
+    // connection starts with an empty assembly buffer.
+    g_peer_cmd_len = 0;
 }
 
 // ============================================================
@@ -644,6 +698,10 @@ void ble_set_on_disconnect(ble_on_disconnect_cb cb) {
 
 void ble_set_on_write(ble_on_write_cb cb) {
     g_on_write_cb = cb;
+}
+
+void ble_set_on_peer_write(ble_on_write_cb cb) {
+    g_on_peer_write_cb = cb;
 }
 
 void ble_set_manifest_version(uint8_t version) {

@@ -64,11 +64,19 @@ void ble_client_stop_scan(void);
  * false if a connection is already up or in progress. */
 bool ble_client_connect(const uint8_t bd_addr[6], uint8_t bd_addr_type);
 
-/* Write the supplied CBOR command bytes to the peer's File Command
- * characteristic (write-without-response). Returns false if no
- * outbound connection is up or characteristics haven't been
- * discovered yet. */
+/* Write the supplied CBOR command bytes to the peer. Targets the Peer
+ * Command characteristic when the responder exposes it (M4 stage 6+),
+ * otherwise falls back to File Command for backward-compat with pre-M4
+ * firmware. Returns false if no outbound connection is up or
+ * characteristics haven't been discovered yet. */
 bool ble_client_send_command(const uint8_t *data, size_t len);
+
+/* True iff the currently-connected peer exposed the Peer Command
+ * characteristic during discovery. main.c uses this to decide whether
+ * to drive the encounter handshake (peer_cmd present) or to skip
+ * straight to peer_sync (legacy path). Only valid between
+ * on_connected and on_disconnected. */
+bool ble_client_uses_peer_characteristic(void);
 
 /* Tear down the outbound connection. on_disconnected fires when the
  * link is fully closed. */

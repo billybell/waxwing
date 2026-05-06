@@ -13,6 +13,7 @@
 #define CHAR_DEVICE_IDENTITY       "CE575801-494E-4700-8000-00805F9B34FB"
 #define CHAR_FILE_COMMAND          "CE57580D-494E-4700-8000-00805F9B34FB"
 #define CHAR_FILE_RESPONSE         "CE57580E-494E-4700-8000-00805F9B34FB"
+#define CHAR_PEER_COMMAND          "CE57580F-494E-4700-8000-00805F9B34FB"
 
 // Maximum size for BLE characteristic data
 #define BLE_MAX_DATA_SIZE 256
@@ -92,6 +93,13 @@ void ble_set_led(bool on);
 void ble_set_on_connect(ble_on_connect_cb cb);
 void ble_set_on_disconnect(ble_on_disconnect_cb cb);
 void ble_set_on_write(ble_on_write_cb cb);
+
+// Register a callback for writes to the peer command characteristic.
+// Same shape as ble_set_on_write but fires from the peer-mode handle.
+// Used by main.c to drive the encounter handshake on the responder
+// side. Writes to the companion characteristic still go through
+// ble_set_on_write.
+void ble_set_on_peer_write(ble_on_write_cb cb);
 
 /**
  * External buffers for CBOR-encoded data (defined in ble.c).
