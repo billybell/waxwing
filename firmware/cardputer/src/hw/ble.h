@@ -14,6 +14,7 @@
 #define WAXWING_CHAR_IDENTITY "CE575801-494E-4700-8000-00805F9B34FB"
 #define WAXWING_CHAR_FILE_CMD "CE57580D-494E-4700-8000-00805F9B34FB"
 #define WAXWING_CHAR_FILE_RSP "CE57580E-494E-4700-8000-00805F9B34FB"
+#define WAXWING_CHAR_PEER_CMD "CE57580F-494E-4700-8000-00805F9B34FB"
 
 #define BLE_MAX_DATA_SIZE 256
 
@@ -43,6 +44,11 @@ bool     ble_send_file_response(const uint8_t *data, size_t len);
 void ble_set_on_connect(ble_on_connect_cb cb);
 void ble_set_on_disconnect(ble_on_disconnect_cb cb);
 void ble_set_on_write(ble_on_write_cb cb);
+
+// M4 stage 6: writes to the peer command characteristic (separate from
+// the companion command characteristic) feed into this callback. Used
+// by main.cpp to drive the encounter handshake on the responder side.
+void ble_set_on_peer_write(ble_on_write_cb cb);
 
 #ifdef __cplusplus
 }

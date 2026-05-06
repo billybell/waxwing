@@ -9,12 +9,16 @@ extern "C" {
 #include "core/attestations.h"
 #include "core/cborencode.h"
 #include "core/commands.h"
+#include "core/encounter_record.h"
+#include "core/encounter_session.h"
 #include "core/encounters.h"
 #include "core/filestore.h"
 #include "core/hal_crypto.h"
 #include "core/identity.h"
 #include "core/manifest_counter.h"
+#include "core/meeting_count.h"
 #include "core/mesh_state.h"
+#include "core/peer_ledger.h"
 #include "core/peer_sync.h"
 #include "core/peer_table.h"
 #include "core/ssid_scan.h"
@@ -48,7 +52,26 @@ struct CmdEntry {
     uint8_t data[512];
 };
 constexpr size_t kCmdQueueDepth = 4;
-QueueHandle_t g_cmd_queue = nullptr;
+QueueHandle_t g_cmd_queue      = nullptr;
+QueueHandle_t g_peer_cmd_queue = nullptr;
+
+// M4 stage 6: responder-side encounter session state. Armed on every
+// inbound connect; the first PROPOSE drives it through to DONE.
+encounter_session_t g_resp_session = {};
+bool                g_resp_armed   = false;
+bool                g_resp_done    = false;
+
+// M4 stage 6: outbound-side encounter session and phase machine.
+// Pre-handshake peers (no peer_cmd characteristic) skip these and run
+// the legacy peer_sync path directly.
+enum class OutPhase : uint8_t {
+    Idle,
+    Handshake,           // PROPOSE sent, awaiting ACCEPT
+    HandshakeConfirmed,  // CONFIRM sent, awaiting OK ACK
+    Syncing,             // peer_sync running
+};
+OutPhase            g_out_phase    = OutPhase::Idle;
+encounter_session_t g_init_session = {};
 
 // Outbound peer-sync session state (Pico W's main.c structure).
 peer_sync_session_t *g_sync                = nullptr;
@@ -115,17 +138,23 @@ void publish_identity() {
     ble_set_identity_raw(buf, pos);
 }
 
+// Forward declarations (definitions live further down).
+void arm_responder_session();
+void reset_responder_session();
+
 // ------------------------------------------------------------
 // Inbound (peripheral) callbacks
 // ------------------------------------------------------------
 
 void on_inbound_connect(uint16_t handle) {
     g_last_conn_handle = handle;
+    arm_responder_session();
     mesh_state_on_connected(now_ms());
 }
 
 void on_inbound_disconnect(uint16_t /*handle*/) {
     g_last_conn_handle = 0xFFFF;
+    reset_responder_session();
     mesh_state_on_disconnected(now_ms());
 }
 
@@ -154,6 +183,178 @@ void process_pending_commands() {
 }
 
 // ------------------------------------------------------------
+// Encounter handshake helpers (M4 stage 6).
+// ------------------------------------------------------------
+
+void build_local_input(encounter_local_input_t *me, const uint8_t *expected) {
+    std::memset(me, 0, sizeof(*me));
+    std::memcpy(me->pub,  g_identity.pub,  ENCOUNTER_PUB_BYTES);
+    std::memcpy(me->seed, g_identity.seed, ENCOUNTER_PUB_BYTES);
+    hal_random_bytes(me->nonce, ENCOUNTER_NONCE_BYTES);
+    if (expected) {
+        std::memcpy(me->expected_peer_prefix, expected, 8);
+    }
+    me->meeting_count = meeting_count_get();
+
+    ssid_scan_t scan;
+    if (ssid_scan_hal_latest(&scan)) {
+        uint8_t n = scan.count;
+        if (n > ENCOUNTER_BSSID_MAX) n = ENCOUNTER_BSSID_MAX;
+        me->bssids_count = n;
+        for (uint8_t i = 0; i < n; i++) {
+            std::memcpy(me->bssids[i], scan.obs[i].bssid, 6);
+        }
+    }
+    // Per-peer rep / byte / file fields stay zero until the post-M4
+    // refinement that resolves the peer's full TPK and looks up the
+    // matching peer_ledger entry. First-contact records carry zeros
+    // either way.
+}
+
+void on_encounter_done(const encounter_record_t *rec, bool we_are_a) {
+    uint8_t id[ENCOUNTER_ID_BYTES];
+    encounter_record_id(rec, id);
+
+    char name[FS_MAX_NAME_LEN];
+    std::snprintf(name, sizeof(name),
+                  "enc_%02x%02x%02x%02x%02x%02x%02x%02x.cbor",
+                  id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]);
+
+    uint8_t buf[ENCOUNTER_RECORD_MAX_BYTES];
+    size_t  blob_len = encounter_record_encode_full(rec, buf, sizeof(buf));
+    if (blob_len > 0) {
+        if (fs_write(name, buf, blob_len) == 0) {
+            manifest_counter_bump();
+            ble_set_manifest_version(manifest_counter_get());
+        } else {
+            std::printf("[enc] fs_write failed for %s\r\n", name);
+        }
+    }
+
+    meeting_count_bump();
+
+    const uint8_t *peer_pub = we_are_a ? rec->pub_b : rec->pub_a;
+    uint64_t peer_count    = we_are_a ? rec->meeting_count_b
+                                       : rec->meeting_count_a;
+    peer_ledger_apply(peer_pub, /*tx*/0, /*rx*/0, /*files*/0, peer_count);
+
+    std::printf("[enc] DONE id=%02x%02x%02x%02x peer=%02x%02x%02x%02x\r\n",
+                id[0], id[1], id[2], id[3],
+                peer_pub[0], peer_pub[1], peer_pub[2], peer_pub[3]);
+}
+
+int build_ok_ack(uint8_t *out, size_t out_max) {
+    if (out_max < 8) return -1;
+    uint8_t *p = out;
+    p += cborencode_map_header(p, 1);
+    p += cborencode_text_str(p, "ok", 2);
+    p += cborencode_bool(p, 1);
+    return static_cast<int>(p - out);
+}
+
+int build_error_ack(uint8_t *out, size_t out_max, const char *msg) {
+    if (out_max < 32) return -1;
+    uint8_t *p = out;
+    p += cborencode_map_header(p, 1);
+    p += cborencode_text_str(p, "error", 5);
+    size_t mlen = std::strlen(msg);
+    if (mlen > 24) mlen = 24;
+    p += cborencode_text_str(p, msg, mlen);
+    return static_cast<int>(p - out);
+}
+
+void reset_responder_session() {
+    std::memset(&g_resp_session, 0, sizeof(g_resp_session));
+    g_resp_armed = false;
+    g_resp_done  = false;
+}
+
+void arm_responder_session() {
+    if (!g_identity_ready) return;
+    encounter_local_input_t me;
+    build_local_input(&me, /*expected=*/nullptr);
+
+    uint8_t  scratch[ENCOUNTER_MSG_MAX_BYTES];
+    size_t   olen = 0;
+    encounter_step_t step = encounter_session_start(
+        &g_resp_session, ENCOUNTER_ROLE_RESPONDER, &me,
+        scratch, sizeof(scratch), &olen);
+    if (step == ENCOUNTER_STEP_NEED_READ) {
+        g_resp_armed = true;
+    } else {
+        std::printf("[enc] responder start refused (step=%d)\r\n",
+                    static_cast<int>(step));
+    }
+}
+
+// Inbound peer-command writes (CHAR_PEER_COMMAND). NimBLE callback —
+// queue the bytes for the main loop to dispatch.
+void on_peer_command(const uint8_t *data, size_t len) {
+    if (len == 0 || len > sizeof(CmdEntry::data)) return;
+    CmdEntry entry;
+    entry.len = len;
+    std::memcpy(entry.data, data, len);
+    if (xQueueSend(g_peer_cmd_queue, &entry, 0) != pdTRUE) {
+        g_dropped_cmds++;
+    }
+}
+
+void process_pending_peer_commands() {
+    CmdEntry entry;
+    while (xQueueReceive(g_peer_cmd_queue, &entry, 0) == pdTRUE) {
+        if (!g_resp_armed) {
+            arm_responder_session();
+            if (!g_resp_armed) {
+                int n = build_error_ack(g_resp_buf, sizeof(g_resp_buf),
+                                        "no session");
+                if (n > 0) ble_send_file_response(g_resp_buf,
+                                                   static_cast<size_t>(n));
+                continue;
+            }
+        }
+
+        if (g_resp_done) {
+            int rc = commands_handle_session(COMMANDS_SESSION_PEER,
+                                              entry.data, entry.len,
+                                              g_resp_buf, sizeof(g_resp_buf));
+            if (rc > 0 && ble_is_connected()) {
+                ble_send_file_response(g_resp_buf,
+                                        static_cast<size_t>(rc));
+            }
+            ble_set_manifest_version(manifest_counter_get());
+            continue;
+        }
+
+        size_t out_len = 0;
+        encounter_step_t step = encounter_session_handle(
+            &g_resp_session, entry.data, entry.len,
+            g_resp_buf, sizeof(g_resp_buf), &out_len);
+
+        if (step == ENCOUNTER_STEP_NEED_WRITE) {
+            ble_send_file_response(g_resp_buf, out_len);
+            continue;
+        }
+        if (step == ENCOUNTER_STEP_DONE) {
+            encounter_record_t rec;
+            if (encounter_session_take_record(&g_resp_session, &rec)) {
+                on_encounter_done(&rec, /*we_are_a=*/false);
+            }
+            g_resp_done = true;
+            int n = build_ok_ack(g_resp_buf, sizeof(g_resp_buf));
+            if (n > 0) ble_send_file_response(g_resp_buf,
+                                               static_cast<size_t>(n));
+            continue;
+        }
+        // ERROR
+        int n = build_error_ack(g_resp_buf, sizeof(g_resp_buf),
+                                "handshake failed");
+        if (n > 0) ble_send_file_response(g_resp_buf,
+                                           static_cast<size_t>(n));
+        reset_responder_session();
+    }
+}
+
+// ------------------------------------------------------------
 // Outbound (central) callbacks — peer sync session lifecycle.
 // Mirrors firmware/pico-w/src/hw/pico-w/main.c.
 // ------------------------------------------------------------
@@ -170,9 +371,7 @@ void on_peer_seen(const ble_client_peer_t *peer) {
     ble_client_connect(peer->bd_addr, peer->bd_addr_type);
 }
 
-void on_client_connected() {
-    mesh_state_on_connected(now_ms());
-
+void start_peer_sync() {
     size_t           out_len = 0;
     peer_sync_step_t step    = PEER_SYNC_ERROR;
     g_sync = peer_sync_start(g_sync_peer_tpk, g_sync_buf, sizeof(g_sync_buf),
@@ -183,47 +382,117 @@ void on_client_connected() {
         ble_client_disconnect();
         return;
     }
+    g_out_phase = OutPhase::Syncing;
     if (!ble_client_send_command(g_sync_buf, out_len)) {
-        std::printf("[mesh] first send failed; disconnecting\r\n");
+        std::printf("[mesh] first sync send failed; disconnecting\r\n");
+        ble_client_disconnect();
+    }
+}
+
+void on_client_connected() {
+    mesh_state_on_connected(now_ms());
+
+    if (!ble_client_uses_peer_characteristic()) {
+        std::printf("[mesh] peer has no peer_cmd; legacy peer_sync path\r\n");
+        start_peer_sync();
+        return;
+    }
+
+    if (!g_identity_ready) {
+        std::printf("[mesh] no identity; skipping handshake\r\n");
+        ble_client_disconnect();
+        return;
+    }
+
+    encounter_local_input_t me;
+    build_local_input(&me, g_sync_peer_tpk);
+
+    uint8_t  scratch[ENCOUNTER_MSG_MAX_BYTES];
+    size_t   olen = 0;
+    encounter_step_t step = encounter_session_start(
+        &g_init_session, ENCOUNTER_ROLE_INITIATOR, &me,
+        scratch, sizeof(scratch), &olen);
+    if (step != ENCOUNTER_STEP_NEED_WRITE) {
+        std::printf("[enc] initiator start refused (step=%d)\r\n",
+                    static_cast<int>(step));
+        ble_client_disconnect();
+        return;
+    }
+    g_out_phase = OutPhase::Handshake;
+    if (!ble_client_send_command(scratch, olen)) {
+        std::printf("[enc] PROPOSE send failed; disconnecting\r\n");
         ble_client_disconnect();
     }
 }
 
 void on_client_response(const uint8_t *data, size_t len) {
-    if (!g_sync) {
-        std::printf("[mesh] WARN: response (%u bytes) with no active session\r\n",
-                    static_cast<unsigned>(len));
-        return;
-    }
-    size_t           out_len = 0;
-    peer_sync_step_t step    = peer_sync_handle_response(g_sync, data, len,
-                                                          g_sync_buf,
-                                                          sizeof(g_sync_buf),
-                                                          &out_len);
-    if (step == PEER_SYNC_NEED_WRITE) {
-        if (!ble_client_send_command(g_sync_buf, out_len)) {
-            std::printf("[mesh] send_command failed; disconnecting\r\n");
-            ble_client_disconnect();
+    switch (g_out_phase) {
+        case OutPhase::Handshake: {
+            uint8_t scratch[ENCOUNTER_MSG_MAX_BYTES];
+            size_t  olen = 0;
+            encounter_step_t step = encounter_session_handle(
+                &g_init_session, data, len,
+                scratch, sizeof(scratch), &olen);
+            if (step != ENCOUNTER_STEP_NEED_WRITE) {
+                std::printf("[enc] ACCEPT handle failed (step=%d)\r\n",
+                            static_cast<int>(step));
+                ble_client_disconnect();
+                return;
+            }
+            encounter_record_t rec;
+            if (encounter_session_take_record(&g_init_session, &rec)) {
+                on_encounter_done(&rec, /*we_are_a=*/true);
+            }
+            g_out_phase = OutPhase::HandshakeConfirmed;
+            if (!ble_client_send_command(scratch, olen)) {
+                std::printf("[enc] CONFIRM send failed; disconnecting\r\n");
+                ble_client_disconnect();
+            }
+            return;
         }
-        return;
+        case OutPhase::HandshakeConfirmed:
+            (void)data; (void)len;
+            start_peer_sync();
+            return;
+        case OutPhase::Syncing: {
+            if (!g_sync) {
+                std::printf("[mesh] WARN: response (%u bytes) with no sync\r\n",
+                            static_cast<unsigned>(len));
+                return;
+            }
+            size_t           out_len = 0;
+            peer_sync_step_t step    = peer_sync_handle_response(g_sync, data, len,
+                                                                  g_sync_buf,
+                                                                  sizeof(g_sync_buf),
+                                                                  &out_len);
+            if (step == PEER_SYNC_NEED_WRITE) {
+                if (!ble_client_send_command(g_sync_buf, out_len)) {
+                    std::printf("[mesh] send_command failed; disconnecting\r\n");
+                    ble_client_disconnect();
+                }
+                return;
+            }
+            std::printf("[mesh] sync %s\r\n", step == PEER_SYNC_DONE ? "done" : "error");
+            peer_table_record_sync(g_sync_peer_tpk, g_sync_peer_version,
+                                   (step == PEER_SYNC_DONE)
+                                       ? PEER_SYNC_RESULT_SUCCESS
+                                       : PEER_SYNC_RESULT_FAILED,
+                                   now_ms());
+            g_sync_pending = false;
+            if (step == PEER_SYNC_DONE) g_syncs_completed++;
+            ble_set_manifest_version(manifest_counter_get());
+            ble_client_disconnect();
+            return;
+        }
+        case OutPhase::Idle:
+        default:
+            std::printf("[mesh] WARN: unexpected response in Idle\r\n");
+            return;
     }
-    std::printf("[mesh] sync %s\r\n", step == PEER_SYNC_DONE ? "done" : "error");
-    peer_table_record_sync(g_sync_peer_tpk, g_sync_peer_version,
-                           (step == PEER_SYNC_DONE)
-                               ? PEER_SYNC_RESULT_SUCCESS
-                               : PEER_SYNC_RESULT_FAILED,
-                           now_ms());
-    g_sync_pending = false;
-    if (step == PEER_SYNC_DONE) g_syncs_completed++;
-    ble_set_manifest_version(manifest_counter_get());
-    ble_client_disconnect();
 }
 
 void on_client_disconnected() {
     if (g_sync_pending) {
-        // Either the connect attempt itself failed, or the link
-        // dropped before peer_sync ran to completion. Either way:
-        // backoff so we don't immediately retry the same peer.
         std::printf("[mesh] sync attempt aborted; recording FAILED\r\n");
         peer_table_record_sync(g_sync_peer_tpk, g_sync_peer_version,
                                PEER_SYNC_RESULT_FAILED, now_ms());
@@ -233,6 +502,8 @@ void on_client_disconnected() {
         peer_sync_end(g_sync);
         g_sync = nullptr;
     }
+    g_out_phase = OutPhase::Idle;
+    std::memset(&g_init_session, 0, sizeof(g_init_session));
     mesh_state_on_disconnected(now_ms());
 }
 
@@ -315,11 +586,14 @@ void setup() {
     M5Cardputer.begin(cfg);
     M5Cardputer.Display.setRotation(1);
 
-    g_cmd_queue = xQueueCreate(kCmdQueueDepth, sizeof(CmdEntry));
+    g_cmd_queue      = xQueueCreate(kCmdQueueDepth, sizeof(CmdEntry));
+    g_peer_cmd_queue = xQueueCreate(kCmdQueueDepth, sizeof(CmdEntry));
 
     g_sd_ready = (fs_init() == 0);
     if (g_sd_ready) {
         manifest_counter_init();
+        meeting_count_init();
+        peer_ledger_init();
         g_identity_ready = waxwing_identity_load_or_generate(&g_identity);
     }
     peer_table_init();
@@ -334,6 +608,7 @@ void setup() {
     ble_set_on_connect(on_inbound_connect);
     ble_set_on_disconnect(on_inbound_disconnect);
     ble_set_on_write(on_file_command);
+    ble_set_on_peer_write(on_peer_command);
 
     if (g_identity_ready) {
         ble_set_node_name(g_identity.node_name);
@@ -365,6 +640,7 @@ void loop() {
     ble_process();
     ble_client_process();
     process_pending_commands();
+    process_pending_peer_commands();
     apply_mesh_action(mesh_state_tick(now_ms()));
 
     cardputer_ssid_scan_tick(now_ms(), mesh_state_phase() == MESH_CONNECTED);

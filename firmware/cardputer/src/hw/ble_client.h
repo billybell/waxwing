@@ -61,6 +61,13 @@ bool ble_client_connect(const uint8_t bd_addr[6], uint8_t bd_addr_type);
 bool ble_client_send_command(const uint8_t *data, size_t len);
 void ble_client_disconnect(void);
 
+// True iff the currently-connected peer exposed the Peer Command
+// characteristic during discovery. main.cpp branches on this to drive
+// the encounter handshake when present, or fall back to legacy
+// peer_sync against pre-M4 firmware. Only valid between on_connected
+// and on_disconnected.
+bool ble_client_uses_peer_characteristic(void);
+
 // Drain the event queue, dispatching to registered callbacks. Call
 // every loop iteration.
 void ble_client_process(void);

@@ -24,6 +24,7 @@ namespace {
 
 const NimBLEUUID kSvcUUID(WAXWING_SERVICE_UUID);
 const NimBLEUUID kCmdUUID(WAXWING_CHAR_FILE_CMD);
+const NimBLEUUID kPeerCmdUUID(WAXWING_CHAR_PEER_CMD);
 const NimBLEUUID kRspUUID(WAXWING_CHAR_FILE_RSP);
 
 enum class EvtType : uint8_t {
@@ -47,9 +48,10 @@ struct Evt {
 constexpr size_t kEvtQueueDepth = 8;
 QueueHandle_t g_evt_q = nullptr;
 
-NimBLEClient*               g_client   = nullptr;
-NimBLERemoteCharacteristic* g_char_cmd = nullptr;
-NimBLERemoteCharacteristic* g_char_rsp = nullptr;
+NimBLEClient*               g_client        = nullptr;
+NimBLERemoteCharacteristic* g_char_file_cmd = nullptr;
+NimBLERemoteCharacteristic* g_char_peer_cmd = nullptr;
+NimBLERemoteCharacteristic* g_char_rsp      = nullptr;
 
 ble_client_on_peer_seen_cb     g_cb_peer_seen    = nullptr;
 ble_client_on_connected_cb     g_cb_connected    = nullptr;
@@ -241,14 +243,17 @@ bool ble_client_connect(const uint8_t bd_addr[6], uint8_t bd_addr_type) {
         g_client->disconnect();
         return false;
     }
-    g_char_cmd = svc->getCharacteristic(kCmdUUID);
-    g_char_rsp = svc->getCharacteristic(kRspUUID);
-    if (!g_char_cmd || !g_char_rsp) {
-        std::printf("[ble_client] characteristics not found (cmd=%p rsp=%p)\r\n",
-                    g_char_cmd, g_char_rsp);
+    g_char_file_cmd = svc->getCharacteristic(kCmdUUID);
+    g_char_peer_cmd = svc->getCharacteristic(kPeerCmdUUID);   // optional
+    g_char_rsp      = svc->getCharacteristic(kRspUUID);
+    if (!g_char_file_cmd || !g_char_rsp) {
+        std::printf("[ble_client] required chars not found (file_cmd=%p rsp=%p)\r\n",
+                    g_char_file_cmd, g_char_rsp);
         g_client->disconnect();
         return false;
     }
+    std::printf("[ble_client] discovered chars: file_cmd=1 peer_cmd=%d resp=1\r\n",
+                g_char_peer_cmd ? 1 : 0);
     if (!g_char_rsp->subscribe(true, notify_cb)) {
         std::printf("[ble_client] subscribe failed\r\n");
         g_client->disconnect();
@@ -262,8 +267,17 @@ bool ble_client_connect(const uint8_t bd_addr[6], uint8_t bd_addr_type) {
 }
 
 bool ble_client_send_command(const uint8_t *data, size_t len) {
-    if (!g_connected || !g_char_cmd) return false;
-    return g_char_cmd->writeValue(data, len, /*response=*/false);
+    if (!g_connected) return false;
+    // Prefer the peer characteristic (M4 stage 6) when the responder
+    // exposes it; fall back to file_cmd for pre-M4 firmware.
+    NimBLERemoteCharacteristic *target =
+        g_char_peer_cmd ? g_char_peer_cmd : g_char_file_cmd;
+    if (!target) return false;
+    return target->writeValue(data, len, /*response=*/false);
+}
+
+bool ble_client_uses_peer_characteristic(void) {
+    return g_char_peer_cmd != nullptr;
 }
 
 void ble_client_disconnect(void) {
@@ -295,9 +309,10 @@ void ble_client_process(void) {
                 if (g_cb_connected) g_cb_connected();
                 break;
             case EvtType::Disconnected:
-                g_connected = false;
-                g_char_cmd  = nullptr;
-                g_char_rsp  = nullptr;
+                g_connected     = false;
+                g_char_file_cmd = nullptr;
+                g_char_peer_cmd = nullptr;
+                g_char_rsp      = nullptr;
                 if (g_cb_disconnected) g_cb_disconnected();
                 break;
             case EvtType::Response:

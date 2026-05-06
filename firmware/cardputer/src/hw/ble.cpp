@@ -25,6 +25,7 @@ NimBLEServer*         g_server          = nullptr;
 NimBLEService*        g_service         = nullptr;
 NimBLECharacteristic* g_char_identity   = nullptr;
 NimBLECharacteristic* g_char_file_cmd   = nullptr;
+NimBLECharacteristic* g_char_peer_cmd   = nullptr;
 NimBLECharacteristic* g_char_file_rsp   = nullptr;
 NimBLEAdvertising*    g_advertising     = nullptr;
 
@@ -35,6 +36,7 @@ bool     g_advertising_active = false;
 ble_on_connect_cb    g_cb_connect    = nullptr;
 ble_on_disconnect_cb g_cb_disconnect = nullptr;
 ble_on_write_cb      g_cb_write      = nullptr;
+ble_on_write_cb      g_cb_peer_write = nullptr;
 
 class ServerCallbacks final : public NimBLEServerCallbacks {
 public:
@@ -69,8 +71,21 @@ public:
     }
 };
 
+class PeerCommandCallbacks final : public NimBLECharacteristicCallbacks {
+public:
+    void onWrite(NimBLECharacteristic* chr,
+                 NimBLEConnInfo& /*info*/) override {
+        const std::string value = chr->getValue();
+        if (g_cb_peer_write) {
+            g_cb_peer_write(reinterpret_cast<const uint8_t*>(value.data()),
+                             value.size());
+        }
+    }
+};
+
 ServerCallbacks       g_server_cbs;
 FileCommandCallbacks  g_file_cmd_cbs;
+PeerCommandCallbacks  g_peer_cmd_cbs;
 
 void publish_advertising_payload() {
     if (!g_advertising) return;
@@ -131,6 +146,14 @@ bool ble_init(void) {
         WAXWING_CHAR_FILE_CMD,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
     g_char_file_cmd->setCallbacks(&g_file_cmd_cbs);
+
+    // M4 stage 6: peer command characteristic, gated by the encounter
+    // handshake before any other command runs. Same Write / Write
+    // Without Response properties as file_cmd.
+    g_char_peer_cmd = g_service->createCharacteristic(
+        WAXWING_CHAR_PEER_CMD,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+    g_char_peer_cmd->setCallbacks(&g_peer_cmd_cbs);
 
     g_char_file_rsp = g_service->createCharacteristic(
         WAXWING_CHAR_FILE_RSP,
@@ -201,3 +224,4 @@ bool ble_send_file_response(const uint8_t* data, size_t len) {
 void ble_set_on_connect(ble_on_connect_cb cb)       { g_cb_connect = cb; }
 void ble_set_on_disconnect(ble_on_disconnect_cb cb) { g_cb_disconnect = cb; }
 void ble_set_on_write(ble_on_write_cb cb)           { g_cb_write = cb; }
+void ble_set_on_peer_write(ble_on_write_cb cb)      { g_cb_peer_write = cb; }
