@@ -66,6 +66,8 @@ extern void test_peer_ledger_persists_across_init(void);
 extern void test_peer_ledger_eviction_picks_lowest_meeting_count(void);
 extern void test_peer_ledger_set_rep_creates_entry(void);
 extern void test_peer_ledger_get_zeroes_out_on_miss(void);
+extern void test_peer_ledger_get_by_prefix_hits_first_8_bytes(void);
+extern void test_peer_ledger_get_by_prefix_misses_unknown(void);
 extern void test_peer_ledger_corrupted_blob_resets(void);
 
 extern void test_peer_unknown_connects(void);
@@ -273,6 +275,8 @@ int main(void) {
     TEST_RUN(test_peer_ledger_eviction_picks_lowest_meeting_count);
     TEST_RUN(test_peer_ledger_set_rep_creates_entry);
     TEST_RUN(test_peer_ledger_get_zeroes_out_on_miss);
+    TEST_RUN(test_peer_ledger_get_by_prefix_hits_first_8_bytes);
+    TEST_RUN(test_peer_ledger_get_by_prefix_misses_unknown);
     TEST_RUN(test_peer_ledger_corrupted_blob_resets);
 
     TEST_RUN(test_peer_unknown_connects);
@@ -417,6 +421,6 @@ int main(void) {
     TEST_RUN(test_cmd_attest_ingest_dedup_counts);
     TEST_RUN(test_cmd_attest_ingest_missing_blobs);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 186, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 188, test_failures);
     return test_failures;
 }

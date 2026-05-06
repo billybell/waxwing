@@ -164,6 +164,38 @@ void test_peer_ledger_get_zeroes_out_on_miss(void) {
     TEST_ASSERT(e.last_meeting_count == 0, "out cleared even after garbage");
 }
 
+void test_peer_ledger_get_by_prefix_hits_first_8_bytes(void) {
+    clear_state();
+    uint8_t pub[32];
+    make_pub(pub, 0xAA);
+    peer_ledger_apply(pub, 100, 200, 3, 7);
+
+    // First 8 bytes of pub: 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB0, 0xB1
+    uint8_t prefix[8];
+    memcpy(prefix, pub, 8);
+
+    peer_ledger_entry_t e;
+    bool ok = peer_ledger_get_by_prefix(prefix, &e);
+    TEST_ASSERT(ok, "matching prefix returns hit");
+    TEST_ASSERT(e.tx_bytes_lifetime == 100, "found correct entry by prefix");
+    TEST_ASSERT(memcmp(e.pub, pub, 32) == 0, "full pub returned in entry");
+}
+
+void test_peer_ledger_get_by_prefix_misses_unknown(void) {
+    clear_state();
+    uint8_t pub[32];
+    make_pub(pub, 0xAA);
+    peer_ledger_apply(pub, 100, 200, 3, 7);
+
+    uint8_t bogus_prefix[8] = {0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF};
+    peer_ledger_entry_t e;
+    memset(&e, 0xFF, sizeof(e));
+    bool ok = peer_ledger_get_by_prefix(bogus_prefix, &e);
+    TEST_ASSERT(!ok, "non-matching prefix returns miss");
+    TEST_ASSERT(e.tx_bytes_lifetime == 0,
+                "out is zeroed on miss even with garbage fill");
+}
+
 void test_peer_ledger_corrupted_blob_resets(void) {
     clear_state();
     // Plant garbage with the wrong magic in /system/.

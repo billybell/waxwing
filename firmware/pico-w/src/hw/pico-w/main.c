@@ -116,14 +116,18 @@ static uint8_t resp_buf[512];
 // Build the local input the encounter session needs from this node's
 // identity, current meeting count, and latest BSSID scan. `expected`
 // is the 8-byte TPK prefix we expect the peer to advertise (initiator
-// side); pass NULL or zeros on the responder side.
+// side); pass NULL on the responder side.
 //
-// Per-peer reputation/byte-count fields are zero for now. Looking up
-// the correct values requires resolving the peer's full TPK first
-// (initiator: prefix-match against peer_ledger; responder: needs the
-// PROPOSE message). That refinement is M4 follow-up work — first-
-// contact records carry zeros, which is also what the spec mandates
-// for genuinely-new peers.
+// On the initiator path we know the peer's prefix from the BLE
+// advertisement, so we look up peer_ledger by prefix and populate the
+// lifetime fields with what we already know about this peer. The
+// responder doesn't yet know the peer at start time and leaves those
+// fields at zero — refining that path requires a late-binding tweak
+// to encounter_session that's a separate follow-up. Genuinely-new
+// peers always carry zeros, which is the correct first-contact state.
+//
+// `rep_of_peer` stays zero until a reputation system lands; that's
+// schema-reserved space.
 static void build_local_input(encounter_local_input_t *me,
                               const uint8_t *expected) {
     memset(me, 0, sizeof(*me));
@@ -142,6 +146,16 @@ static void build_local_input(encounter_local_input_t *me,
         me->bssids_count = n;
         for (uint8_t i = 0; i < n; i++) {
             memcpy(me->bssids[i], scan->obs[i].bssid, 6);
+        }
+    }
+
+    if (expected) {
+        peer_ledger_entry_t e;
+        if (peer_ledger_get_by_prefix(expected, &e)) {
+            me->tx_bytes_to_peer_lifetime     = e.tx_bytes_lifetime;
+            me->rx_bytes_from_peer_lifetime   = e.rx_bytes_lifetime;
+            me->file_count_from_peer_lifetime = e.file_count_lifetime;
+            me->rep_of_peer                    = e.my_rep_score;
         }
     }
 }
@@ -218,10 +232,35 @@ static encounter_session_t g_resp_session;
 static bool                g_resp_armed   = false;
 static bool                g_resp_done    = false;
 
+// Per-connection byte counters for the responder side. Track every
+// peer-characteristic byte that flows during the connection (handshake
+// included). At disconnect, if we know the peer's full pub from the
+// completed encounter, we apply the deltas to peer_ledger so the next
+// session between us populates the lifetime fields with real numbers.
+//
+// Companion-characteristic bytes are NOT counted — peer_ledger tracks
+// peer-to-peer relationships only.
+static uint64_t g_inbound_peer_tx = 0;
+static uint64_t g_inbound_peer_rx = 0;
+static uint8_t  g_inbound_peer_pub[ENCOUNTER_PUB_BYTES];
+static bool     g_inbound_peer_pub_known = false;
+
 static void reset_responder_session(void) {
     memset(&g_resp_session, 0, sizeof(g_resp_session));
     g_resp_armed = false;
     g_resp_done  = false;
+    g_inbound_peer_tx        = 0;
+    g_inbound_peer_rx        = 0;
+    g_inbound_peer_pub_known = false;
+}
+
+// Send a response on the file_response characteristic AND tally the
+// payload toward the per-session peer rx/tx counters (responder ->
+// peer = our tx). Use this any time the responder side sends bytes
+// to a peer over the notification channel.
+static void send_peer_response(const uint8_t *data, size_t len) {
+    ble_send_file_response(data, len);
+    g_inbound_peer_tx += (uint64_t)len;
 }
 
 static void arm_responder_session(void) {
@@ -252,8 +291,11 @@ static void on_file_command(const uint8_t *data, size_t len) {
 
 // Peer-path writes (CHAR_PEER_COMMAND). Pre-DONE bytes feed the
 // encounter session; post-DONE bytes route through commands_handle in
-// PEER mode.
+// PEER mode. Every byte exchanged is tallied to the per-session
+// counter for application to peer_ledger at disconnect.
 static void on_peer_command(const uint8_t *data, size_t len) {
+    g_inbound_peer_rx += (uint64_t)len;
+
     if (!g_resp_armed) {
         // Connect raced ahead of identity load, or session was torn
         // down. Try to arm now so the first PROPOSE doesn't fall on
@@ -261,7 +303,7 @@ static void on_peer_command(const uint8_t *data, size_t len) {
         arm_responder_session();
         if (!g_resp_armed) {
             int n = build_error_ack(resp_buf, sizeof(resp_buf), "no session");
-            if (n > 0) ble_send_file_response(resp_buf, (size_t)n);
+            if (n > 0) send_peer_response(resp_buf, (size_t)n);
             return;
         }
     }
@@ -270,7 +312,7 @@ static void on_peer_command(const uint8_t *data, size_t len) {
         int rc = commands_handle_session(COMMANDS_SESSION_PEER, data, len,
                                           resp_buf, sizeof(resp_buf));
         if (rc > 0 && ble_is_connected()) {
-            ble_send_file_response(resp_buf, (size_t)rc);
+            send_peer_response(resp_buf, (size_t)rc);
         }
         ble_set_manifest_version(manifest_counter_get());
         return;
@@ -283,22 +325,25 @@ static void on_peer_command(const uint8_t *data, size_t len) {
         resp_buf, sizeof(resp_buf), &out_len);
 
     if (step == ENCOUNTER_STEP_NEED_WRITE) {
-        ble_send_file_response(resp_buf, out_len);
+        send_peer_response(resp_buf, out_len);
         return;
     }
     if (step == ENCOUNTER_STEP_DONE) {
         encounter_record_t rec;
         if (encounter_session_take_record(&g_resp_session, &rec)) {
             on_encounter_done(&rec, /*we_are_a=*/false);
+            // We are the B side; the peer is A.
+            memcpy(g_inbound_peer_pub, rec.pub_a, ENCOUNTER_PUB_BYTES);
+            g_inbound_peer_pub_known = true;
         }
         g_resp_done = true;
         int n = build_ok_ack(resp_buf, sizeof(resp_buf));
-        if (n > 0) ble_send_file_response(resp_buf, (size_t)n);
+        if (n > 0) send_peer_response(resp_buf, (size_t)n);
         return;
     }
     // ERROR
     int n = build_error_ack(resp_buf, sizeof(resp_buf), "handshake failed");
-    if (n > 0) ble_send_file_response(resp_buf, (size_t)n);
+    if (n > 0) send_peer_response(resp_buf, (size_t)n);
     reset_responder_session();
 }
 
@@ -320,6 +365,22 @@ static uint8_t              g_sync_peer_tpk[8];
 static uint8_t              g_sync_peer_version;
 static uint8_t              g_sync_buf[256];
 
+// Per-session byte counters for the outbound connection. Same shape
+// as the responder counters; applied to peer_ledger at disconnect.
+static uint64_t g_outbound_tx = 0;
+static uint64_t g_outbound_rx = 0;
+static uint8_t  g_outbound_peer_pub[ENCOUNTER_PUB_BYTES];
+static bool     g_outbound_peer_pub_known = false;
+
+// Wrap ble_client_send_command so every outbound write is tallied
+// toward the per-session counter. Returns the underlying result so
+// callers can react to send failures.
+static bool send_outbound(const uint8_t *data, size_t len) {
+    bool ok = ble_client_send_command(data, len);
+    if (ok) g_outbound_tx += (uint64_t)len;
+    return ok;
+}
+
 static void start_peer_sync(void) {
     size_t           out_len = 0;
     peer_sync_step_t step    = PEER_SYNC_ERROR;
@@ -332,7 +393,7 @@ static void start_peer_sync(void) {
         return;
     }
     g_out_phase = OUT_SYNCING;
-    if (!ble_client_send_command(g_sync_buf, out_len)) {
+    if (!send_outbound(g_sync_buf, out_len)) {
         printf("[mesh] first sync send failed; disconnecting\r\n");
         ble_client_disconnect();
     }
@@ -345,6 +406,9 @@ static void on_peer_seen(const ble_client_peer_t *peer) {
     }
     memcpy(g_sync_peer_tpk, peer->tpk_prefix, 8);
     g_sync_peer_version = peer->manifest_version;
+    g_outbound_tx              = 0;
+    g_outbound_rx              = 0;
+    g_outbound_peer_pub_known  = false;
     ble_client_connect(peer->bd_addr, peer->bd_addr_type);
 }
 
@@ -379,13 +443,14 @@ static void on_client_connected(void) {
         return;
     }
     g_out_phase = OUT_HANDSHAKE;
-    if (!ble_client_send_command(scratch, olen)) {
+    if (!send_outbound(scratch, olen)) {
         printf("[enc] PROPOSE send failed; disconnecting\r\n");
         ble_client_disconnect();
     }
 }
 
 static void on_client_response(const uint8_t *data, size_t len) {
+    g_outbound_rx += (uint64_t)len;
     switch (g_out_phase) {
         case OUT_HANDSHAKE: {
             // Expecting ACCEPT.
@@ -406,9 +471,12 @@ static void on_client_response(const uint8_t *data, size_t len) {
             encounter_record_t rec;
             if (encounter_session_take_record(&g_init_session, &rec)) {
                 on_encounter_done(&rec, /*we_are_a=*/true);
+                // We are A; the peer is B.
+                memcpy(g_outbound_peer_pub, rec.pub_b, ENCOUNTER_PUB_BYTES);
+                g_outbound_peer_pub_known = true;
             }
             g_out_phase = OUT_HANDSHAKE_CONFIRMED;
-            if (!ble_client_send_command(scratch, olen)) {
+            if (!send_outbound(scratch, olen)) {
                 printf("[enc] CONFIRM send failed; disconnecting\r\n");
                 ble_client_disconnect();
             }
@@ -434,7 +502,7 @@ static void on_client_response(const uint8_t *data, size_t len) {
                                                                sizeof(g_sync_buf),
                                                                &out_len);
             if (step == PEER_SYNC_NEED_WRITE) {
-                if (!ble_client_send_command(g_sync_buf, out_len)) {
+                if (!send_outbound(g_sync_buf, out_len)) {
                     printf("[mesh] send_command failed; disconnecting\r\n");
                     ble_client_disconnect();
                 }
@@ -458,12 +526,23 @@ static void on_client_response(const uint8_t *data, size_t len) {
 }
 
 static void on_client_disconnected(void) {
+    if (g_outbound_peer_pub_known &&
+        (g_outbound_tx > 0 || g_outbound_rx > 0)) {
+        peer_ledger_apply(g_outbound_peer_pub,
+                          g_outbound_tx,
+                          g_outbound_rx,
+                          /*file_delta=*/0,
+                          /*peer_meeting_count_seen=*/0);
+    }
     if (g_sync) {
         peer_sync_end(g_sync);
         g_sync = NULL;
     }
     g_out_phase = OUT_IDLE;
     memset(&g_init_session, 0, sizeof(g_init_session));
+    g_outbound_peer_pub_known = false;
+    g_outbound_tx = 0;
+    g_outbound_rx = 0;
     mesh_state_on_disconnected(now_ms());
 }
 
@@ -482,6 +561,18 @@ static void on_inbound_connected(uint16_t conn_handle) {
 
 static void on_inbound_disconnected(uint16_t conn_handle) {
     (void)conn_handle;
+    // If the encounter completed during this connection we know the
+    // peer's full pub; apply the byte deltas accumulated since connect.
+    // peer_meeting_count_seen=0 means "don't update" (the on_encounter
+    // path already wrote the up-to-date count).
+    if (g_inbound_peer_pub_known &&
+        (g_inbound_peer_tx > 0 || g_inbound_peer_rx > 0)) {
+        peer_ledger_apply(g_inbound_peer_pub,
+                          g_inbound_peer_tx,
+                          g_inbound_peer_rx,
+                          /*file_delta=*/0,
+                          /*peer_meeting_count_seen=*/0);
+    }
     reset_responder_session();
     mesh_state_on_disconnected(now_ms());
 }

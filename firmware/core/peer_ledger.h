@@ -80,6 +80,19 @@ int peer_ledger_count(void);
 bool peer_ledger_get(const uint8_t pub[PEER_LEDGER_PUB_BYTES],
                      peer_ledger_entry_t *out);
 
+/* Read the current ledger entry by 8-byte TPK prefix. The BLE central
+ * only sees the prefix in advertisements, so this is the lookup it
+ * uses to populate "lifetime fields" of the next encounter record
+ * before the full pub is known (initiator side, build_local_input).
+ *
+ * Returns true on the first hit and fills *out. Returns false on miss
+ * (out is zeroed). Two distinct full pubs sharing the same 8-byte
+ * prefix would collide here, but that is astronomically unlikely
+ * across the cap (PEER_LEDGER_CAP=64) of stored peers.
+ */
+bool peer_ledger_get_by_prefix(const uint8_t prefix[8],
+                               peer_ledger_entry_t *out);
+
 /* Apply deltas to a peer's running totals. Creates a new entry on
  * first contact, evicting the lowest-meeting-count peer if at capacity.
  * `peer_meeting_count_seen` updates last_meeting_count if it's higher

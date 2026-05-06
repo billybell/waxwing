@@ -177,6 +177,19 @@ bool peer_ledger_get(const uint8_t pub[PEER_LEDGER_PUB_BYTES],
     return true;
 }
 
+bool peer_ledger_get_by_prefix(const uint8_t prefix[8],
+                               peer_ledger_entry_t *out) {
+    if (!out) return false;
+    for (uint8_t i = 0; i < g_used; i++) {
+        if (memcmp(g_entries[i].pub, prefix, 8) == 0) {
+            *out = g_entries[i];
+            return true;
+        }
+    }
+    memset(out, 0, sizeof(*out));
+    return false;
+}
+
 // Saturating add: prevents wrap when a single delta would push past
 // UINT64_MAX. Same defensive posture as meeting_count.
 static uint64_t sat_add_u64(uint64_t a, uint64_t b) {
