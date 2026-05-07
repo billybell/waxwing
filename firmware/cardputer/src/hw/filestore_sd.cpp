@@ -7,6 +7,7 @@
 
 extern "C" {
 #include "core/filestore.h"
+#include "core/hal_crypto.h"
 }
 
 #include <Arduino.h>
@@ -29,6 +30,7 @@ constexpr int kPinMOSI = 14;
 constexpr const char *kFilesDir    = "/files";
 constexpr const char *kSystemDir   = "/system";
 constexpr const char *kMetaSuffix  = ".meta";
+constexpr const char *kHashSuffix  = ".h8";
 constexpr size_t      kMaxShotFile = 2048;
 constexpr uint32_t    kMaxChunked  = 512u * 1024u;
 constexpr uint32_t    kStorageReserve = 32u * 1024u;
@@ -45,10 +47,22 @@ struct ChunkState {
 };
 ChunkState g_chunk;
 
+bool has_suffix(const char *name, const char *suffix) {
+    const size_t nl = std::strlen(name);
+    const size_t sl = std::strlen(suffix);
+    return nl > sl && std::strcmp(name + nl - sl, suffix) == 0;
+}
+
 bool name_is_meta(const char *name) {
-    const size_t len = std::strlen(name);
-    const size_t suf = std::strlen(kMetaSuffix);
-    return len > suf && std::strcmp(name + len - suf, kMetaSuffix) == 0;
+    return has_suffix(name, kMetaSuffix);
+}
+
+bool name_is_hash_sidecar(const char *name) {
+    return has_suffix(name, kHashSuffix);
+}
+
+bool name_is_sidecar(const char *name) {
+    return name_is_meta(name) || name_is_hash_sidecar(name);
 }
 
 bool valid_name(const char *name) {
@@ -70,6 +84,40 @@ bool build_path(const char *dir, const char *name, char *out, size_t outsz,
 bool ensure_dir(const char *path) {
     if (SD.exists(path)) return true;
     return SD.mkdir(path);
+}
+
+// ---------------------------------------------------------------------------
+// Hash sidecar helpers (mirrors filestore_fatfs.c — see notes there).
+// ---------------------------------------------------------------------------
+
+int read_hash_sidecar(const char *name, uint8_t out_hash[8]) {
+    char path[64];
+    if (!build_path(kFilesDir, name, path, sizeof(path), kHashSuffix)) return -1;
+    File f = SD.open(path, FILE_READ);
+    if (!f) return -1;
+    int n = f.read(out_hash, 8);
+    f.close();
+    return n == 8 ? 0 : -1;
+}
+
+void write_hash_sidecar(const char *name, const uint8_t *hash_8plus) {
+    char path[64];
+    if (!build_path(kFilesDir, name, path, sizeof(path), kHashSuffix)) return;
+    // Arduino SD's FILE_WRITE doesn't truncate; remove first so that a
+    // shorter old sidecar can't leave trailing bytes.
+    SD.remove(path);
+    File f = SD.open(path, FILE_WRITE, /*create=*/true);
+    if (!f) return;
+    f.write(hash_8plus, 8);
+    f.flush();
+    f.close();
+}
+
+void delete_hash_sidecar(const char *name) {
+    char path[64];
+    if (build_path(kFilesDir, name, path, sizeof(path), kHashSuffix)) {
+        SD.remove(path);
+    }
 }
 
 }  // namespace
@@ -112,7 +160,7 @@ extern "C" int fs_list(char (*out_names)[FS_MAX_NAME_LEN], uint32_t *out_sizes,
         // Some Arduino SD cores return the full path here; reduce to leaf.
         const char *slash = std::strrchr(fname, '/');
         if (slash) fname = slash + 1;
-        if (name_is_meta(fname)) { f.close(); continue; }
+        if (name_is_sidecar(fname)) { f.close(); continue; }
 
         std::strncpy(stage_names[total], fname, FS_MAX_NAME_LEN - 1);
         stage_names[total][FS_MAX_NAME_LEN - 1] = '\0';
@@ -148,7 +196,9 @@ extern "C" int fs_list(char (*out_names)[FS_MAX_NAME_LEN], uint32_t *out_sizes,
         std::strncpy(out_names[i], stage_names[start + i], FS_MAX_NAME_LEN - 1);
         out_names[i][FS_MAX_NAME_LEN - 1] = '\0';
         out_sizes[i] = stage_sizes[start + i];
-        std::memset(out_hash[i], 0, 8);  // hash placeholder; matches Pico W
+        if (fs_get_hash(out_names[i], out_hash[i]) != 0) {
+            std::memset(out_hash[i], 0, 8);
+        }
     }
 
     if (next_offset) *next_offset = end < total ? end : 0;
@@ -164,6 +214,51 @@ extern "C" int fs_file_size(const char *name) {
     int sz = static_cast<int>(f.size());
     f.close();
     return sz;
+}
+
+namespace {
+
+int compute_file_hash_8(const char *path, uint8_t out_hash[8]) {
+    File f = SD.open(path, FILE_READ);
+    if (!f) return -1;
+
+    hal_sha256_ctx_t *s = hal_sha256_init();
+    if (!s) { f.close(); return -1; }
+
+    uint8_t buf[256];
+    for (;;) {
+        int n = f.read(buf, sizeof(buf));
+        if (n < 0) {
+            hal_sha256_free(s);
+            f.close();
+            return -1;
+        }
+        if (n == 0) break;
+        hal_sha256_update(s, buf, static_cast<size_t>(n));
+        if (static_cast<size_t>(n) < sizeof(buf)) break;
+    }
+
+    uint8_t digest[32];
+    hal_sha256_final(s, digest);
+    hal_sha256_free(s);
+    f.close();
+
+    std::memcpy(out_hash, digest, 8);
+    return 0;
+}
+
+}  // namespace
+
+extern "C" int fs_get_hash(const char *name, uint8_t out_hash[8]) {
+    if (!g_mounted) return -1;
+
+    if (read_hash_sidecar(name, out_hash) == 0) return 0;
+
+    char path[64];
+    if (!build_path(kFilesDir, name, path, sizeof(path))) return -1;
+    if (compute_file_hash_8(path, out_hash) != 0) return -1;
+    write_hash_sidecar(name, out_hash);
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +288,19 @@ extern "C" int fs_write(const char *name, const uint8_t *data, size_t len) {
     size_t bw = f.write(data, len);
     f.flush();
     f.close();
-    if (bw != len) return -1;
+    if (bw != len) {
+        delete_hash_sidecar(name);
+        return -1;
+    }
+
+    // Eager sidecar refresh while data is still in RAM.
+    uint8_t digest[32];
+    if (hal_sha256_blob(data, len, digest)) {
+        write_hash_sidecar(name, digest);
+    } else {
+        delete_hash_sidecar(name);
+    }
+
     std::printf("[filestore] Wrote %s (%zu bytes)\r\n", path, len);
     return 0;
 }
@@ -218,6 +325,8 @@ extern "C" int fs_chunked_start(const char *name, uint32_t total_size) {
 
     File f = SD.open(path, FILE_WRITE, /*create=*/true);
     if (!f) return -1;
+    // File is about to be overwritten — drop stale hash sidecar.
+    delete_hash_sidecar(name);
     g_chunk.file = f;
     std::strncpy(g_chunk.name, name, FS_MAX_NAME_LEN - 1);
     g_chunk.name[FS_MAX_NAME_LEN - 1] = '\0';
@@ -310,6 +419,7 @@ extern "C" int fs_delete(const char *name) {
     if (build_path(kFilesDir, name, meta, sizeof(meta), kMetaSuffix)) {
         SD.remove(meta);  // best-effort: missing meta is fine
     }
+    delete_hash_sidecar(name);
     std::printf("[filestore] Deleted %s\r\n", path);
     return 0;
 }
@@ -344,7 +454,7 @@ extern "C" void fs_storage_info(uint32_t *free_out, uint32_t *used_out,
                 const char *fname = f.name();
                 const char *slash = std::strrchr(fname, '/');
                 if (slash) fname = slash + 1;
-                if (!name_is_meta(fname)) files_count++;
+                if (!name_is_sidecar(fname)) files_count++;
             }
             f.close();
         }

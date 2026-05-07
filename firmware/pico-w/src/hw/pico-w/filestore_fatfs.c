@@ -1,4 +1,5 @@
 #include "core/filestore.h"
+#include "core/hal_crypto.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -13,6 +14,7 @@
 #define FILES_DIR_NAME      "/files"
 #define SYSTEM_DIR_NAME     "/system"
 #define META_SUFFIX         ".meta"
+#define HASH_SUFFIX         ".h8"       // 8-byte truncated SHA-256 sidecar
 #define MAX_SHOT_FILE_SIZE  2048        // single-shot write limit
 #define MAX_CHUNKED_SIZE    (512 * 1024)
 #define STORAGE_RESERVE     (32 * 1024)
@@ -38,9 +40,24 @@ static chunk_state_t chunk_state;
 // Path helpers
 // ---------------------------------------------------------------------------
 
+static bool has_suffix(const char *name, const char *suffix) {
+    size_t nl = strlen(name);
+    size_t sl = strlen(suffix);
+    return nl > sl && strcmp(name + nl - sl, suffix) == 0;
+}
+
 static bool name_is_meta(const char *name) {
-    size_t len = strlen(name);
-    return len > 5 && strcmp(name + len - 5, META_SUFFIX) == 0;
+    return has_suffix(name, META_SUFFIX);
+}
+
+static bool name_is_hash_sidecar(const char *name) {
+    return has_suffix(name, HASH_SUFFIX);
+}
+
+// True for any sidecar that should be invisible to listings and to the
+// user-file count: .meta and .h8 both qualify.
+static bool name_is_sidecar(const char *name) {
+    return name_is_meta(name) || name_is_hash_sidecar(name);
 }
 
 // Build "/files/<name>" into the supplied buffer. Returns false if the
@@ -58,6 +75,53 @@ static bool build_meta_path(const char *name, char *out, size_t out_size) {
     if (strchr(name, '/') != NULL) return false;
     int n = snprintf(out, out_size, FILES_DIR_NAME "/%s" META_SUFFIX, name);
     return n > 0 && (size_t)n < out_size;
+}
+
+static bool build_hash_path(const char *name, char *out, size_t out_size) {
+    if (!name || !*name) return false;
+    if (strchr(name, '/') != NULL) return false;
+    int n = snprintf(out, out_size, FILES_DIR_NAME "/%s" HASH_SUFFIX, name);
+    return n > 0 && (size_t)n < out_size;
+}
+
+// ---------------------------------------------------------------------------
+// Hash sidecar helpers
+//
+// Each user file at /files/<name> has an optional /files/<name>.h8 sidecar
+// that holds the first 8 bytes of its SHA-256. The sidecar is a pure
+// cache: it is invalidated by deletion on every mutation path (single-
+// shot write, chunked-write start, file delete) and lazily regenerated
+// by fs_get_hash on the next call. Single-shot writes also eagerly
+// repopulate it since the data is already in RAM.
+// ---------------------------------------------------------------------------
+
+static int read_hash_sidecar(const char *name, uint8_t out_hash[8]) {
+    char path[64];
+    if (!build_hash_path(name, path, sizeof(path))) return -1;
+    FIL fil;
+    if (f_open(&fil, path, FA_READ) != FR_OK) return -1;
+    UINT br = 0;
+    FRESULT res = f_read(&fil, out_hash, 8, &br);
+    f_close(&fil);
+    return (res == FR_OK && br == 8) ? 0 : -1;
+}
+
+// Best-effort write — failures are tolerated because the sidecar is a
+// cache. On any failure subsequent fs_get_hash falls back to compute.
+static void write_hash_sidecar(const char *name, const uint8_t *hash_8plus) {
+    char path[64];
+    if (!build_hash_path(name, path, sizeof(path))) return;
+    FIL fil;
+    if (f_open(&fil, path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return;
+    UINT bw = 0;
+    f_write(&fil, hash_8plus, 8, &bw);
+    f_sync(&fil);
+    f_close(&fil);
+}
+
+static void delete_hash_sidecar(const char *name) {
+    char path[64];
+    if (build_hash_path(name, path, sizeof(path))) f_unlink(path);
 }
 
 // /system/<name>. Same name-validation rules as user files (no slashes,
@@ -149,7 +213,7 @@ int fs_list(char (*out_names)[FS_MAX_NAME_LEN], uint32_t *out_sizes,
         if (f_readdir(&dir, &finfo) != FR_OK) break;
         if (finfo.fname[0] == '\0') break;
         if (finfo.fattrib & AM_DIR) continue;
-        if (name_is_meta(finfo.fname)) continue;
+        if (name_is_sidecar(finfo.fname)) continue;
         strncpy(stage_names[total], finfo.fname, FS_MAX_NAME_LEN - 1);
         stage_names[total][FS_MAX_NAME_LEN - 1] = '\0';
         stage_sizes[total] = (uint32_t)finfo.fsize;
@@ -183,7 +247,9 @@ int fs_list(char (*out_names)[FS_MAX_NAME_LEN], uint32_t *out_sizes,
         strncpy(out_names[i], stage_names[start + i], FS_MAX_NAME_LEN - 1);
         out_names[i][FS_MAX_NAME_LEN - 1] = '\0';
         out_sizes[i] = stage_sizes[start + i];
-        memset(out_hash[i], 0, 8);
+        if (fs_get_hash(out_names[i], out_hash[i]) != 0) {
+            memset(out_hash[i], 0, 8);
+        }
     }
 
     if (next_offset) *next_offset = end < total ? end : 0;
@@ -196,6 +262,53 @@ int fs_file_size(const char *name) {
     if (!build_full_path(name, path, sizeof(path))) return -1;
     FILINFO finfo;
     return f_stat(path, &finfo) == FR_OK ? (int)finfo.fsize : -1;
+}
+
+// Stream-hashes the file at `path`. Caller is responsible for path
+// validation. Returns 0 on success with the first 8 bytes of the digest
+// in `out_hash`.
+static int compute_file_hash_8(const char *path, uint8_t out_hash[8]) {
+    FIL fil;
+    if (f_open(&fil, path, FA_READ) != FR_OK) return -1;
+
+    hal_sha256_ctx_t *s = hal_sha256_init();
+    if (!s) { f_close(&fil); return -1; }
+
+    uint8_t buf[256];
+    UINT br = 0;
+    for (;;) {
+        FRESULT res = f_read(&fil, buf, sizeof(buf), &br);
+        if (res != FR_OK) {
+            hal_sha256_free(s);
+            f_close(&fil);
+            return -1;
+        }
+        if (br == 0) break;
+        hal_sha256_update(s, buf, br);
+        if (br < sizeof(buf)) break;
+    }
+
+    uint8_t digest[32];
+    hal_sha256_final(s, digest);
+    hal_sha256_free(s);
+    f_close(&fil);
+
+    memcpy(out_hash, digest, 8);
+    return 0;
+}
+
+int fs_get_hash(const char *name, uint8_t out_hash[8]) {
+    if (!fs_mounted) return -1;
+
+    // Sidecar fast path. Any successful mutation of the file invalidates
+    // (deletes) its sidecar, so a present sidecar is trustworthy.
+    if (read_hash_sidecar(name, out_hash) == 0) return 0;
+
+    char path[64];
+    if (!build_full_path(name, path, sizeof(path))) return -1;
+    if (compute_file_hash_8(path, out_hash) != 0) return -1;
+    write_hash_sidecar(name, out_hash);
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +340,20 @@ int fs_write(const char *name, const uint8_t *data, size_t len) {
     FRESULT res = f_write(&fil, data, (UINT)len, &bw);
     f_sync(&fil);
     f_close(&fil);
-    if (res != FR_OK || (size_t)bw != len) return -1;
+    if (res != FR_OK || (size_t)bw != len) {
+        delete_hash_sidecar(name);
+        return -1;
+    }
+
+    // Eager sidecar refresh: data is already in RAM, so we can hash it
+    // here for free (no extra disk read).
+    uint8_t digest[32];
+    if (hal_sha256_blob(data, len, digest)) {
+        write_hash_sidecar(name, digest);
+    } else {
+        delete_hash_sidecar(name);
+    }
+
     printf("[filestore] Wrote %s (%zu bytes)\r\n", path, len);
     return 0;
 }
@@ -254,6 +380,10 @@ int fs_chunked_start(const char *name, uint32_t total_size) {
     char path[64];
     if (!build_full_path(name, path, sizeof(path))) return -1;
     if (f_open(&chunk_state.fil, path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return -1;
+
+    // File was just truncated; any pre-existing hash sidecar is stale.
+    // Sidecar is regenerated lazily on the next fs_get_hash call.
+    delete_hash_sidecar(name);
 
     strncpy(chunk_state.name, name, FS_MAX_NAME_LEN - 1);
     chunk_state.name[FS_MAX_NAME_LEN - 1] = '\0';
@@ -350,6 +480,7 @@ int fs_delete(const char *name) {
 
     char meta[64];
     if (build_meta_path(name, meta, sizeof(meta))) f_unlink(meta);
+    delete_hash_sidecar(name);
     printf("[filestore] Deleted %s\r\n", path);
     return 0;
 }
@@ -379,8 +510,8 @@ void fs_storage_info(uint32_t *free_out, uint32_t *used_out,
         if (free_out) *free_out = (uint32_t)free_bytes;
     }
 
-    // Walk /files to compute used + count. .meta sidecars are counted as
-    // used bytes but excluded from the file count.
+    // Walk /files to compute used + count. Sidecars (.meta, .h8) are
+    // counted as used bytes but excluded from the file count.
     uint32_t used_bytes = 0;
     uint32_t file_count = 0;
     DIR dir;
@@ -389,7 +520,7 @@ void fs_storage_info(uint32_t *free_out, uint32_t *used_out,
         while (f_readdir(&dir, &finfo) == FR_OK && finfo.fname[0] != '\0') {
             if (finfo.fattrib & AM_DIR) continue;
             used_bytes += (uint32_t)finfo.fsize;
-            if (!name_is_meta(finfo.fname)) file_count++;
+            if (!name_is_sidecar(finfo.fname)) file_count++;
         }
         f_closedir(&dir);
     }

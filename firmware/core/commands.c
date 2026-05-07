@@ -85,6 +85,42 @@ static size_t cbor_arg_size(uint32_t v) {
     return 5;
 }
 
+static int resolve_hash_to_name(const uint8_t hash[8], char *out_name) {
+    char names[16][FS_MAX_NAME_LEN];
+    uint32_t sizes[16];
+    uint8_t hashes[16][8];
+    int next_offset = 0;
+    int offset = 0;
+
+    while (1) {
+        int avail = fs_list(names, sizes, hashes, 16, offset, 16, &next_offset);
+        if (avail < 0) return -1;
+        for (int i = 0; i < avail; i++) {
+            if (memcmp(hashes[i], hash, 8) == 0) {
+                strncpy(out_name, names[i], FS_MAX_NAME_LEN);
+                return 0;
+            }
+        }
+        if (next_offset <= offset || avail == 0) break;
+        offset = next_offset;
+    }
+    return -1;
+}
+
+static int resolve_filename(const uint8_t *body, const uint8_t *body_end, uint64_t pc, char *out_name) {
+    if (cbor_map_get_text(body, body_end, pc, "name", out_name, FS_MAX_NAME_LEN, NULL)) {
+        return 0;
+    }
+
+    const uint8_t *hash_ptr = NULL;
+    size_t hash_len = 0;
+    if (cbor_map_get_bytes(body, body_end, pc, "hash", &hash_ptr, &hash_len) && hash_len == 8) {
+        return resolve_hash_to_name(hash_ptr, out_name);
+    }
+
+    return -1;
+}
+
 // Encoded size of one ls entry: map(3) of "name"+"size"+"hash". Must stay
 // in sync with the writes in cmd_ls below — if you change one, change both.
 static size_t ls_entry_size(const char *name, uint32_t size) {
@@ -189,8 +225,8 @@ static int cmd_read(const uint8_t *body, const uint8_t *body_end, uint64_t pc,
                     uint8_t *out, size_t out_max) {
     if (out_max < 256) return emit_error(out, out_max, "buffer too small");
     char name[FS_MAX_NAME_LEN];
-    if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
-        return emit_error(out, out_max, "missing name");
+    if (resolve_filename(body, body_end, pc, name) != 0)
+        return emit_error(out, out_max, "missing name or hash");
 
     uint8_t scratch[MAX_INLINE_DATA];
     size_t cap = safe_chunk_for_response();
@@ -263,8 +299,8 @@ static int cmd_read_start(const uint8_t *body, const uint8_t *body_end,
                           uint64_t pc, uint8_t *out, size_t out_max) {
     if (out_max < 64) return emit_error(out, out_max, "buffer too small");
     char name[FS_MAX_NAME_LEN];
-    if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
-        return emit_error(out, out_max, "missing name");
+    if (resolve_filename(body, body_end, pc, name) != 0)
+        return emit_error(out, out_max, "missing name or hash");
     int sz = fs_read_start(name);
     if (sz < 0) return emit_error(out, out_max, "not found");
 
@@ -282,8 +318,8 @@ static int cmd_read_chunk(const uint8_t *body, const uint8_t *body_end,
     if (out_max < 256) return emit_error(out, out_max, "buffer too small");
     char name[FS_MAX_NAME_LEN];
     uint64_t offset_u = 0, size_u = MAX_INLINE_DATA;
-    if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
-        return emit_error(out, out_max, "missing name");
+    if (resolve_filename(body, body_end, pc, name) != 0)
+        return emit_error(out, out_max, "missing name or hash");
     cbor_map_get_uint(body, body_end, pc, "offset", &offset_u);
     cbor_map_get_uint(body, body_end, pc, "size", &size_u);
     size_t mtu_cap = safe_chunk_for_response();
@@ -306,8 +342,8 @@ static int cmd_read_chunk(const uint8_t *body, const uint8_t *body_end,
 static int cmd_delete(const uint8_t *body, const uint8_t *body_end,
                       uint64_t pc, uint8_t *out, size_t out_max) {
     char name[FS_MAX_NAME_LEN];
-    if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
-        return emit_error(out, out_max, "missing name");
+    if (resolve_filename(body, body_end, pc, name) != 0)
+        return emit_error(out, out_max, "missing name or hash");
     if (fs_delete(name) != 0) return emit_error(out, out_max, "not found");
     // Note: deletes do NOT bump the manifest counter (M4 stage 7). The
     // counter is a "new content available" hint for peers, and our sync
@@ -322,8 +358,8 @@ static int cmd_delete(const uint8_t *body, const uint8_t *body_end,
 static int cmd_read_meta(const uint8_t *body, const uint8_t *body_end,
                          uint64_t pc, uint8_t *out, size_t out_max) {
     char name[FS_MAX_NAME_LEN];
-    if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
-        return emit_error(out, out_max, "missing name");
+    if (resolve_filename(body, body_end, pc, name) != 0)
+        return emit_error(out, out_max, "missing name or hash");
 
     uint8_t meta_buf[200];
     int n = fs_read_meta(name, meta_buf, sizeof(meta_buf));
@@ -351,8 +387,8 @@ static int cmd_read_meta(const uint8_t *body, const uint8_t *body_end,
 static int cmd_write_meta(const uint8_t *body, const uint8_t *body_end,
                           uint64_t pc, uint8_t *out, size_t out_max) {
     char name[FS_MAX_NAME_LEN];
-    if (!cbor_map_get_text(body, body_end, pc, "name", name, sizeof(name), NULL))
-        return emit_error(out, out_max, "missing name");
+    if (resolve_filename(body, body_end, pc, name) != 0)
+        return emit_error(out, out_max, "missing name or hash");
 
     cbor_item_t meta;
     if (!cbor_map_find(body, body_end, pc, "meta", &meta) || meta.type != CBOR_TYPE_MAP)

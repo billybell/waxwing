@@ -4,11 +4,49 @@
 // Standard Ed25519 — interoperable with iOS CryptoKit Curve25519.Signing.
 
 #include "core/hal_crypto.h"
+#include "core/thirdparty/sha256/sha256.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 #include "pico/rand.h"
 #include "core/thirdparty/monocypher/monocypher-ed25519.h"
+
+// ---------------------------------------------------------------------------
+// SHA-256 wrappers (bridge to vendored implementation)
+// ---------------------------------------------------------------------------
+
+struct hal_sha256_ctx {
+    sha256_ctx ctx;
+};
+
+hal_sha256_ctx_t* hal_sha256_init(void) {
+    hal_sha256_ctx_t *s = malloc(sizeof(hal_sha256_ctx_t));
+    if (s) sha256_init(&s->ctx);
+    return s;
+}
+
+void hal_sha256_update(hal_sha256_ctx_t *ctx, const uint8_t *data, size_t len) {
+    if (ctx) sha256_update(&ctx->ctx, data, len);
+}
+
+void hal_sha256_final(hal_sha256_ctx_t *ctx, uint8_t out[32]) {
+    if (ctx) sha256_final(&ctx->ctx, out);
+}
+
+void hal_sha256_free(hal_sha256_ctx_t *ctx) {
+    free(ctx);
+}
+
+bool hal_sha256_blob(const uint8_t *data, size_t len, uint8_t out[32]) {
+    if (!data || !out) return false;
+    sha256(data, len, out);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// RNG + Ed25519
+// ---------------------------------------------------------------------------
 
 bool hal_random_bytes(uint8_t *out, size_t n) {
     while (n >= 4) {

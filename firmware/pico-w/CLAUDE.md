@@ -59,9 +59,10 @@ action that the driver in `main.c` translates into
 or outbound) freeze the FSM via `mesh_state_on_connected`; disconnects
 resume it.
 
-**Manifest counter invariant**: any successful mutation of `/files/`
-bumps `manifest_counter_bump()` exactly once. The bump callsites are
-deliberately scoped to two callers:
+**Manifest counter invariant**: any successful *companion- or
+peer-driven* mutation of `/files/` bumps `manifest_counter_bump()`
+exactly once. The bump callsites are deliberately scoped to two
+callers:
 
 - `commands.c`: `cmd_write` / `cmd_write_end` / `cmd_delete` after
   successful filestore work (companion-driven mutations).
@@ -71,6 +72,15 @@ deliberately scoped to two callers:
 `main.c` calls `ble_set_manifest_version(manifest_counter_get())` after
 either path so the next advertisement frame on air carries the new
 byte. The setter is idempotent on unchanged values.
+
+**Encounter records are exempt.** `on_encounter_done` writes
+`enc_*.cbor` to `/files/` (so iOS can pull them via the standard file
+commands) but deliberately does *not* bump the counter. Reason: every
+successful peer sync produces a new encounter record on each side —
+bumping would advertise new content, the peer would re-sync to fetch
+it, and the round-trip would produce yet another encounter record.
+The previous build deadlocked into an infinite peer-sync loop because
+of this. Don't reintroduce the bump on that path.
 
 **Two-connection btstack**: `MAX_NR_HCI_CONNECTIONS=2` so an inbound
 companion connection and an outbound peer-sync connection can coexist

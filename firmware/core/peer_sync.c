@@ -40,6 +40,7 @@ struct peer_sync_session {
     // The current ls page contents, decoded from the latest ls response.
     char     names[PEER_SYNC_PAGE][32];     // 32 == FS_MAX_NAME_LEN
     uint32_t sizes[PEER_SYNC_PAGE];
+    uint8_t  hashes[PEER_SYNC_PAGE][8];
     int      page_count;
     int      page_idx;                       // which file in page we're on
 
@@ -133,6 +134,32 @@ static int response_is_error(const uint8_t *body, const uint8_t *end,
 // Filestore helpers, isolating the side-effects so they're easy to find.
 // ---------------------------------------------------------------------------
 
+// Check if any local file has this truncated hash. An all-zero hash is
+// treated as "unknown" (the peer didn't supply one, or it was malformed)
+// and never matches — otherwise a peer with no hash would dedup against
+// any local file whose own fs_get_hash failed and wrote zeros.
+static bool fs_hash_exists(const uint8_t hash[8]) {
+    static const uint8_t zero[8] = {0};
+    if (memcmp(hash, zero, 8) == 0) return false;
+
+    char names[16][FS_MAX_NAME_LEN];
+    uint32_t sizes[16];
+    uint8_t hashes[16][8];
+    int next = 0;
+    int offset = 0;
+
+    while (1) {
+        int avail = fs_list(names, sizes, hashes, 16, offset, 16, &next);
+        if (avail <= 0) break;
+        for (int i = 0; i < avail; i++) {
+            if (memcmp(hashes[i], hash, 8) == 0) return true;
+        }
+        if (next <= offset) break;
+        offset = next;
+    }
+    return false;
+}
+
 static void abort_inflight_write(struct peer_sync_session *s) {
     if (s->chunked_open) {
         fs_chunked_abort(s->cur_name);
@@ -164,10 +191,11 @@ static void start_next_file_or_finish(struct peer_sync_session *s,
     while (s->page_idx < s->page_count) {
         const char *name = s->names[s->page_idx];
         uint32_t    sz   = s->sizes[s->page_idx];
+        uint8_t     *hash = s->hashes[s->page_idx];
 
-        // Dedup: if a file with this name already exists locally we
-        // skip — name-based for v0, hash-based later.
-        if (fs_file_size(name) >= 0) {
+        // Dedup: if a file with this name already exists locally, or
+        // any file has the same hash, we skip.
+        if (fs_file_size(name) >= 0 || fs_hash_exists(hash)) {
             s->page_idx++;
             continue;
         }
@@ -272,6 +300,16 @@ static void handle_ls_response(struct peer_sync_session *s,
             continue;
         }
         s->sizes[s->page_count] = (uint32_t)sz;
+
+        uint8_t h[8];
+        const uint8_t *hash_ptr = NULL;
+        size_t hash_len = 0;
+        if (!cbor_map_get_bytes(entry.data, end, entry.arg, "hash", &hash_ptr, &hash_len) || hash_len != 8) {
+            memset(s->hashes[s->page_count], 0, 8);
+        } else {
+            memcpy(s->hashes[s->page_count], hash_ptr, 8);
+        }
+
         s->page_count++;
         p = entry.next;
     }

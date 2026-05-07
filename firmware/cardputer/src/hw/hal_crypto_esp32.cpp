@@ -8,12 +8,41 @@
 
 extern "C" {
 #include "core/hal_crypto.h"
+#include "core/thirdparty/sha256/sha256.h"
 #include "core/thirdparty/monocypher/monocypher-ed25519.h"
 }
 
 #include <esp_random.h>
-
 #include <cstring>
+#include <cstdlib>
+
+struct hal_sha256_ctx {
+    sha256_ctx ctx;
+};
+
+extern "C" hal_sha256_ctx_t* hal_sha256_init(void) {
+    hal_sha256_ctx_t *s = (hal_sha256_ctx_t*)std::malloc(sizeof(hal_sha256_ctx));
+    if (s) sha256_init(&s->ctx);
+    return s;
+}
+
+extern "C" void hal_sha256_update(hal_sha256_ctx_t *ctx, const uint8_t *data, size_t len) {
+    if (ctx) sha256_update(&ctx->ctx, data, len);
+}
+
+extern "C" void hal_sha256_final(hal_sha256_ctx_t *ctx, uint8_t out[32]) {
+    if (ctx) sha256_final(&ctx->ctx, out);
+}
+
+extern "C" void hal_sha256_free(hal_sha256_ctx_t *ctx) {
+    std::free(ctx);
+}
+
+extern "C" bool hal_sha256_blob(const uint8_t *data, size_t len, uint8_t out[32]) {
+    if (!data || !out) return false;
+    sha256(data, len, out);
+    return true;
+}
 
 extern "C" bool hal_random_bytes(uint8_t *out, size_t n) {
     while (n >= 4) {

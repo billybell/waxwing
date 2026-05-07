@@ -40,6 +40,9 @@ int fs_list(char (*out_names)[FS_MAX_NAME_LEN], uint32_t *out_sizes,
 /** Get file size (bytes), or -1 if not found. */
 int fs_file_size(const char *name);
 
+/** Get truncated SHA-256 digest of a file, or -1 if error. */
+int fs_get_hash(const char *name, uint8_t out_hash[8]);
+
 /* ---------------------------------------------------------------------------
  * Single-shot reads / writes
  * --------------------------------------------------------------------------- */

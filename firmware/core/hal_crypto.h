@@ -45,6 +45,19 @@ bool hal_ed25519_verify(const uint8_t pub[32],
                         const uint8_t *message, size_t message_len,
                         const uint8_t sig[64]);
 
+/* ---------------------------------------------------------------------------
+ * SHA-256 hashing (FIPS 180-4). All targets use a shared vendored implementation.
+ * --------------------------------------------------------------------------- */
+typedef struct hal_sha256_ctx hal_sha256_ctx_t;
+
+hal_sha256_ctx_t* hal_sha256_init(void);
+void hal_sha256_update(hal_sha256_ctx_t *ctx, const uint8_t *data, size_t len);
+void hal_sha256_final(hal_sha256_ctx_t *ctx, uint8_t out[32]);
+void hal_sha256_free(hal_sha256_ctx_t *ctx);
+
+// Convenience for one-shot hashing of a known buffer.
+bool hal_sha256_blob(const uint8_t *data, size_t len, uint8_t out[32]);
+
 #ifdef __cplusplus
 }
 #endif

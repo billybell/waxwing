@@ -288,12 +288,16 @@ void on_encounter_done(const encounter_record_t *rec, bool we_are_a) {
     size_t blob_len = encounter_record_encode_full(rec, enc_persist_buf,
                                                     sizeof(enc_persist_buf));
     if (blob_len > 0) {
-        if (fs_write(name, enc_persist_buf, blob_len) == 0) {
-            manifest_counter_bump();
-            ble_set_manifest_version(manifest_counter_get());
-        } else {
+        if (fs_write(name, enc_persist_buf, blob_len) != 0) {
             std::printf("[enc] fs_write failed for %s\r\n", name);
         }
+        // Intentionally no manifest_counter_bump() here. Encounter records
+        // are written as a side-effect of every successful peer sync, so
+        // bumping would cause peer A's sync with B to advertise new
+        // content, prompting B to immediately sync again, producing
+        // another encounter record on each side, ad infinitum. iOS picks
+        // these up by listing /files/ directly when connected, so it does
+        // not need the manifest counter as a "new content" hint.
     }
 
     meeting_count_bump();

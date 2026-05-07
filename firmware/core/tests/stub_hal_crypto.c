@@ -11,8 +11,38 @@
 
 #include "core/hal_crypto.h"
 #include "stub_hal_crypto.h"
+#include "core/thirdparty/sha256/sha256.h"
 
 #include <string.h>
+#include <stdlib.h>
+
+struct hal_sha256_ctx {
+    sha256_ctx ctx;
+};
+
+hal_sha256_ctx_t* hal_sha256_init(void) {
+    hal_sha256_ctx_t *s = malloc(sizeof(struct hal_sha256_ctx));
+    if (s) sha256_init(&s->ctx);
+    return s;
+}
+
+void hal_sha256_update(hal_sha256_ctx_t *ctx, const uint8_t *data, size_t len) {
+    if (ctx) sha256_update(&ctx->ctx, data, len);
+}
+
+void hal_sha256_final(hal_sha256_ctx_t *ctx, uint8_t out[32]) {
+    if (ctx) sha256_final(&ctx->ctx, out);
+}
+
+void hal_sha256_free(hal_sha256_ctx_t *ctx) {
+    free(ctx);
+}
+
+bool hal_sha256_blob(const uint8_t *data, size_t len, uint8_t out[32]) {
+    if (!data || !out) return false;
+    sha256(data, len, out);
+    return true;
+}
 
 unsigned mock_hal_random_call_count = 0;
 static uint8_t random_counter = 0;
