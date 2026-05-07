@@ -281,10 +281,14 @@ void on_encounter_done(const encounter_record_t *rec, bool we_are_a) {
                   "enc_%02x%02x%02x%02x%02x%02x%02x%02x.cbor",
                   id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]);
 
-    uint8_t buf[ENCOUNTER_RECORD_MAX_BYTES];
-    size_t  blob_len = encounter_record_encode_full(rec, buf, sizeof(buf));
+    // 512-byte buffer kept off the loopTask stack — that frame is
+    // already tight from monocypher's Ed25519 signing and the BLE
+    // callback chain that fed us here.
+    static uint8_t enc_persist_buf[ENCOUNTER_RECORD_MAX_BYTES];
+    size_t blob_len = encounter_record_encode_full(rec, enc_persist_buf,
+                                                    sizeof(enc_persist_buf));
     if (blob_len > 0) {
-        if (fs_write(name, buf, blob_len) == 0) {
+        if (fs_write(name, enc_persist_buf, blob_len) == 0) {
             manifest_counter_bump();
             ble_set_manifest_version(manifest_counter_get());
         } else {
@@ -482,8 +486,12 @@ void on_client_connected() {
         return;
     }
 
+    // Pass nullptr: see Pico W note. The advertisement parser stuffs
+    // the BD address into `g_sync_peer_tpk` as a peer_table uniqueness
+    // key, not as a real TPK prefix, so we can't use it to gate the
+    // session or look up peer_ledger by prefix.
     encounter_local_input_t me;
-    build_local_input(&me, g_sync_peer_tpk);
+    build_local_input(&me, nullptr);
 
     uint8_t  scratch[ENCOUNTER_MSG_MAX_BYTES];
     size_t   olen = 0;
@@ -726,6 +734,18 @@ void setup() {
 
     ble_start_advertising();
     render_status();
+}
+
+// Override Arduino-ESP32's weak default (8 KB). The encounter-DONE
+// chain — monocypher Ed25519 sign + FatFS writes for enc record /
+// manifest / meeting_count / peer_ledger — plus the disconnect-time
+// peer_ledger persist routinely overran the default canary on
+// repeat encounters. 32 KB is comfortable headroom on a 320 KB SRAM
+// ESP32-S3 and runs all three call sites (responder dispatch from
+// loop(), initiator on_client_response from ble_client_process,
+// and on_client_disconnected) in the same place.
+size_t getArduinoLoopTaskStackSize(void) {
+    return 64 * 1024;
 }
 
 void loop() {

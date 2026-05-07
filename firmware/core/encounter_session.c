@@ -401,8 +401,8 @@ static encounter_step_t handle_initiator_accept(encounter_session_t *s,
         return ENCOUNTER_STEP_ERROR;
     }
 
-    uint8_t body[ENCOUNTER_BODY_MAX_BYTES];
-    size_t  body_len = encounter_record_encode_body(&s->rec, body, sizeof(body));
+    uint8_t *body = s->body_buf;
+    size_t  body_len = encounter_record_encode_body(&s->rec, body, sizeof(s->body_buf));
     if (body_len == 0) { s->state = ST_ERROR; *out_len = 0; return ENCOUNTER_STEP_ERROR; }
 
     if (!hal_ed25519_verify(s->rec.pub_b, body, body_len, s->rec.sig_b)) {
@@ -458,8 +458,8 @@ static encounter_step_t handle_responder_propose(encounter_session_t *s,
     // body we sign reflects any late-bound updates above.
     fill_local_half(&s->rec, &s->me, /*is_b_side=*/true);
 
-    uint8_t body[ENCOUNTER_BODY_MAX_BYTES];
-    size_t  body_len = encounter_record_encode_body(&s->rec, body, sizeof(body));
+    uint8_t *body = s->body_buf;
+    size_t  body_len = encounter_record_encode_body(&s->rec, body, sizeof(s->body_buf));
     if (body_len == 0) { s->state = ST_ERROR; *out_len = 0; return ENCOUNTER_STEP_ERROR; }
 
     if (!hal_ed25519_sign(s->me.seed, body, body_len, s->rec.sig_b)) {
@@ -486,8 +486,8 @@ static encounter_step_t handle_responder_confirm(encounter_session_t *s,
         return ENCOUNTER_STEP_ERROR;
     }
 
-    uint8_t body[ENCOUNTER_BODY_MAX_BYTES];
-    size_t  body_len = encounter_record_encode_body(&s->rec, body, sizeof(body));
+    uint8_t *body = s->body_buf;
+    size_t  body_len = encounter_record_encode_body(&s->rec, body, sizeof(s->body_buf));
     if (body_len == 0) { s->state = ST_ERROR; return ENCOUNTER_STEP_ERROR; }
 
     if (!hal_ed25519_verify(s->rec.pub_a, body, body_len, s->rec.sig_a)) {

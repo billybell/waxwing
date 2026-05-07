@@ -131,19 +131,23 @@ static bool peer_ledger_late_bind(const uint8_t peer_pub[ENCOUNTER_PUB_BYTES],
 
 // Build the local input the encounter session needs from this node's
 // identity, current meeting count, and latest BSSID scan. `expected`
-// is the 8-byte TPK prefix we expect the peer to advertise (initiator
-// side); pass NULL on the responder side.
+// is the 8-byte TPK prefix we believe the peer advertises; pass NULL
+// when no such prefix is known.
 //
-// Initiator path: we know the peer's prefix up front, so we look up
-// peer_ledger by prefix and bake the lifetime fields into `me`.
-// Responder path: we don't yet know the peer; we install a late_bind
-// callback that encounter_session invokes after PROPOSE arrives, with
-// the peer's full pub. Genuinely-new peers always carry zeros, which
-// is the correct first-contact state.
+// Today the BLE advertisement doesn't carry the TPK prefix — the
+// `tpk_prefix` field on `ble_client_peer_t` is the BD address bytes
+// in disguise (a peer_table uniqueness key, not a real TPK), so both
+// roles currently call this with NULL. The `if (expected)` branch is
+// kept in place for when ads start carrying the actual 8-byte TPK
+// prefix; it lights up the per-peer pre-population on the initiator
+// side without any further changes.
 //
-// `rep_of_peer` stays zero on the initiator path until a reputation
-// system lands; the responder's late_bind also surfaces it as zero
-// for now.
+// Responder side: we install a late_bind callback that encounter_
+// session invokes after PROPOSE arrives, when the peer's full pub
+// is known. That's how the responder gets accurate lifetime fields
+// from peer_ledger today (initiator stays at zeros until ads carry
+// TPK). Genuinely-new peers always carry zeros, which is the correct
+// first-contact state.
 static void build_local_input(encounter_local_input_t *me,
                               const uint8_t *expected) {
     memset(me, 0, sizeof(*me));
@@ -197,10 +201,13 @@ static void on_encounter_done(const encounter_record_t *rec, bool we_are_a) {
                      id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]);
     (void)n;
 
-    uint8_t buf[ENCOUNTER_RECORD_MAX_BYTES];
-    size_t  blob_len = encounter_record_encode_full(rec, buf, sizeof(buf));
+    // 512-byte buffer kept off the BLE callback's stack frame — same
+    // motivation as the matching helper in cardputer/src/main.cpp.
+    static uint8_t enc_persist_buf[ENCOUNTER_RECORD_MAX_BYTES];
+    size_t blob_len = encounter_record_encode_full(rec, enc_persist_buf,
+                                                    sizeof(enc_persist_buf));
     if (blob_len > 0) {
-        if (fs_write(name, buf, blob_len) == 0) {
+        if (fs_write(name, enc_persist_buf, blob_len) == 0) {
             manifest_counter_bump();
             ble_set_manifest_version(manifest_counter_get());
         } else {
@@ -448,8 +455,14 @@ static void on_client_connected(void) {
         return;
     }
 
+    // Pass NULL: ble_client populates `g_sync_peer_tpk` from the
+    // peer's BD address, not from a TPK prefix in the advertisement
+    // (the ad doesn't carry one yet — see parse_advertising_report).
+    // Until ads expose the TPK prefix, the initiator can't pre-bind a
+    // real expected-peer-prefix or a peer_ledger lookup, so we treat
+    // every outbound encounter as first-contact-style on our side.
     encounter_local_input_t me;
-    build_local_input(&me, g_sync_peer_tpk);
+    build_local_input(&me, NULL);
 
     uint8_t  scratch[ENCOUNTER_MSG_MAX_BYTES];
     size_t   olen = 0;

@@ -428,6 +428,46 @@ void test_encounter_session_responder_late_bind_miss_keeps_zeros(void) {
                 "first-contact record (zeros) still verifies");
 }
 
+// Mirror the real firmware path: both sides at first contact, zero
+// scan / zero meeting counts / zero lifetime fields, late_bind set on
+// the responder but returning false (no peer_ledger entry yet). The
+// previous tests use make_input which seeds nonzero bssids/lifetimes;
+// this strips that down to the wire shape the firmware actually sees
+// on first connect between two fresh devices.
+void test_encounter_session_first_contact_with_late_bind_set(void) {
+    encounter_local_input_t me_a, me_b;
+    memset(&me_a, 0, sizeof(me_a));
+    memset(&me_b, 0, sizeof(me_b));
+    memcpy(me_a.seed, SEED_A, 32);
+    memcpy(me_b.seed, SEED_B, 32);
+    hal_ed25519_derive_pub(me_a.seed, me_a.pub);
+    hal_ed25519_derive_pub(me_b.seed, me_b.pub);
+    // Distinct nonces — otherwise the encounter id would collide.
+    for (int i = 0; i < ENCOUNTER_NONCE_BYTES; i++) {
+        me_a.nonce[i] = (uint8_t)(0xA0 + i);
+        me_b.nonce[i] = (uint8_t)(0xB0 + i);
+    }
+    // bssids_count = 0, lifetime fields = 0, meeting_count = 0.
+
+    late_bind_probe_t probe = {0};
+    probe.return_hit = false; // first contact
+    me_b.late_bind     = late_bind_probe_cb;
+    me_b.late_bind_ctx = &probe;
+
+    encounter_session_t init = {0}, resp = {0};
+    TEST_ASSERT(run_handshake(&init, &resp, &me_a, &me_b),
+                "first-contact handshake completes (matches firmware path)");
+    TEST_ASSERT(probe.called, "late_bind invoked even on first contact");
+
+    encounter_record_t rec_a, rec_b;
+    encounter_session_take_record(&init, &rec_a);
+    encounter_session_take_record(&resp, &rec_b);
+    TEST_ASSERT(memcmp(&rec_a, &rec_b, sizeof(rec_a)) == 0,
+                "first-contact records byte-equal across sides");
+    TEST_ASSERT(encounter_record_verify(&rec_a),
+                "first-contact record verifies");
+}
+
 void test_encounter_session_responder_late_bind_runs_after_prefix_check(void) {
     encounter_local_input_t me_a, me_b;
     make_input(&me_a, SEED_A, 1, 0, 0x10);

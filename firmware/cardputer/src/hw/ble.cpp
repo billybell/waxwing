@@ -9,7 +9,8 @@
 
 #include <NimBLEDevice.h>
 
-#include <cstring>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 
 namespace {
 
@@ -33,6 +34,19 @@ uint16_t g_conn_handle = 0xFFFF;
 bool     g_connected   = false;
 bool     g_advertising_active = false;
 
+enum class BleEvtType : uint8_t {
+    Connected,
+    Disconnected,
+};
+
+struct BleEvt {
+    BleEvtType type;
+    uint16_t   handle;
+};
+
+constexpr size_t kBleEvtQueueDepth = 4;
+QueueHandle_t g_ble_evt_q = nullptr;
+
 ble_on_connect_cb    g_cb_connect    = nullptr;
 ble_on_disconnect_cb g_cb_disconnect = nullptr;
 ble_on_write_cb      g_cb_write      = nullptr;
@@ -44,9 +58,9 @@ public:
         g_conn_handle = info.getConnHandle();
         g_connected   = true;
         g_advertising_active = false;
-        if (g_cb_connect) {
-            g_cb_connect(g_conn_handle);
-        }
+        
+        BleEvt e{BleEvtType::Connected, g_conn_handle};
+        if (g_ble_evt_q) xQueueSend(g_ble_evt_q, &e, 0);
     }
 
     void onDisconnect(NimBLEServer* /*server*/, NimBLEConnInfo& info,
@@ -54,9 +68,9 @@ public:
         const uint16_t handle = info.getConnHandle();
         g_connected   = false;
         g_conn_handle = 0xFFFF;
-        if (g_cb_disconnect) {
-            g_cb_disconnect(handle);
-        }
+        
+        BleEvt e{BleEvtType::Disconnected, handle};
+        if (g_ble_evt_q) xQueueSend(g_ble_evt_q, &e, 0);
     }
 };
 
@@ -115,6 +129,8 @@ void publish_advertising_payload() {
 }  // namespace
 
 bool ble_init(void) {
+    g_ble_evt_q = xQueueCreate(kBleEvtQueueDepth, sizeof(BleEvt));
+
     NimBLEDevice::init("Waxwing");
     NimBLEDevice::setMTU(247);
 
@@ -159,8 +175,6 @@ bool ble_init(void) {
         WAXWING_CHAR_FILE_RSP,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
-    g_service->start();
-
     g_advertising = NimBLEDevice::getAdvertising();
     publish_advertising_payload();
 
@@ -202,8 +216,18 @@ void ble_stop_advertising(void) {
 }
 
 void ble_process(void) {
-    // NimBLE runs its own host task; nothing to pump here. Kept for
-    // API parity with the Pico W port.
+    if (!g_ble_evt_q) return;
+    BleEvt e;
+    while (xQueueReceive(g_ble_evt_q, &e, 0) == pdTRUE) {
+        switch (e.type) {
+            case BleEvtType::Connected:
+                if (g_cb_connect) g_cb_connect(e.handle);
+                break;
+            case BleEvtType::Disconnected:
+                if (g_cb_disconnect) g_cb_disconnect(e.handle);
+                break;
+        }
+    }
 }
 
 bool     ble_is_connected(void)   { return g_connected; }

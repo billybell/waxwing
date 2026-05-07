@@ -99,11 +99,17 @@ typedef struct {
 // Opaque-by-convention. Callers should treat the fields as private and
 // use the public API for everything. Exposed in the header so callers
 // can stack-allocate the session.
+//
+// `body_buf` is scratch space for sign/verify that used to live on the
+// stack; embedding it here keeps it out of the BLE callback's tight
+// stack frame on platforms with small task stacks (e.g., the
+// Arduino-ESP32 loopTask on the CardPuter caps at 8 KB).
 typedef struct {
     encounter_role_t        role;
     int                     state;        // private; see encounter_session.c
     encounter_local_input_t me;
     encounter_record_t      rec;
+    uint8_t                 body_buf[ENCOUNTER_BODY_MAX_BYTES];
 } encounter_session_t;
 
 // Begin a session in the given role.
