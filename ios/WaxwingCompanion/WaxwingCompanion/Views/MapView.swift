@@ -20,6 +20,7 @@ struct MapView: View {
     @ObservedObject private var encStore2 = EncountersStore2.shared
     @State private var position: MapCameraPosition = .automatic
     @State private var selection: String?
+    @State private var detailPin: EncounterPin?
 
     var body: some View {
         Map(position: $position, selection: $selection) {
@@ -34,6 +35,19 @@ struct MapView: View {
         .navigationTitle("Map")
         .task { encStore.loadAll() }
         .overlay(alignment: .bottom) { statusOverlay }
+        .onChange(of: selection) { newId in
+            // Open the per-pin detail sheet when a v2 pin is tapped.
+            // v1 pins carry no rich payload; ignore them.
+            guard let newId,
+                  let pin = pins.first(where: { $0.id == newId }),
+                  pin.isV2,
+                  !pin.records.isEmpty
+            else { detailPin = nil; return }
+            detailPin = pin
+        }
+        .sheet(item: $detailPin, onDismiss: { selection = nil }) { pin in
+            EncounterDetailSheet(pin: pin)
+        }
     }
 
     @ViewBuilder
@@ -88,6 +102,10 @@ struct MapView: View {
             let geohash: String
             let isV2: Bool
             var count: Int = 0
+            // v2 records that placed *this* node at this geohash. Lets
+            // the detail sheet show per-record lifetime byte counts and
+            // meeting counts oriented around `nodePub`. Empty for v1.
+            var records: [EncounterRecord2] = []
         }
         var buckets: [String: Bucket] = [:]
 
@@ -127,6 +145,7 @@ struct MapView: View {
                     buckets[key] = Bucket(nodePub: nodePub, geohash: best, isV2: true)
                 }
                 buckets[key]!.count += 1
+                buckets[key]!.records.append(rec)
             }
         }
 
@@ -147,7 +166,11 @@ struct MapView: View {
                 label: b.count > 1 ? "\(name) ×\(b.count)" : name,
                 systemImage: glyph,
                 count: b.count,
-                tint: tintFor(node: b.nodePub)
+                tint: tintFor(node: b.nodePub),
+                nodePub: b.nodePub,
+                geohash: b.geohash,
+                isV2: b.isV2,
+                records: b.records
             )
         }
     }
@@ -169,4 +192,130 @@ private struct EncounterPin: Identifiable {
     let systemImage: String
     let count: Int
     let tint: Color
+    let nodePub: Data
+    let geohash: String
+    let isV2: Bool
+    let records: [EncounterRecord2]
+}
+
+// MARK: - Detail sheet
+//
+// Per-pin detail oriented around `pin.nodePub` ("us"). For each v2
+// record contributing to the pin, surface the cryptographically signed
+// per-side counters that the M4 responder late-bind tweak made
+// meaningful on both sides — meeting counts, lifetime tx/rx bytes,
+// lifetime file count. The "you ↔ peer" labels flip depending on
+// which side of the record `nodePub` is on.
+private struct EncounterDetailSheet: View {
+    let pin: EncounterPin
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack {
+                        Text("Cell")
+                        Spacer()
+                        Text(pin.geohash).monospaced()
+                    }
+                    HStack {
+                        Text("Node")
+                        Spacer()
+                        Text(nodeName(pin.nodePub)).monospaced()
+                    }
+                    HStack {
+                        Text("Encounters here")
+                        Spacer()
+                        Text("\(pin.records.count)")
+                    }
+                }
+                ForEach(pin.records) { rec in
+                    Section(header: Text("Encounter \(rec.id.prefix(16))").monospaced()) {
+                        recordRows(for: rec)
+                    }
+                }
+            }
+            .navigationTitle("Encounter detail")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    @ViewBuilder
+    private func recordRows(for rec: EncounterRecord2) -> some View {
+        // `nodePub` is one side of the record. Pick the matching side
+        // ("us") and orient the lifetime counters around it.
+        let weAreA = rec.pubA == pin.nodePub
+        let peerPub        = weAreA ? rec.pubB : rec.pubA
+        let myMeetingCount = weAreA ? rec.meetingCountA : rec.meetingCountB
+        let peerMeetingCount = weAreA ? rec.meetingCountB : rec.meetingCountA
+        let myTxLifetime   = weAreA ? rec.txBytesAtoBLifetime  : rec.txBytesBtoALifetime
+        let myRxLifetime   = weAreA ? rec.rxBytesAfromBLifetime : rec.rxBytesBfromALifetime
+        let myFilesFromPeer = weAreA ? rec.fileCountAfromBLifetime : rec.fileCountBfromALifetime
+        let peerTxLifetime  = weAreA ? rec.txBytesBtoALifetime  : rec.txBytesAtoBLifetime
+        let peerRxLifetime  = weAreA ? rec.rxBytesBfromALifetime : rec.rxBytesAfromBLifetime
+        let peerFilesFromUs = weAreA ? rec.fileCountBfromALifetime : rec.fileCountAfromBLifetime
+        let peerRepOfUs    = weAreA ? rec.repOfAbyB : rec.repOfBbyA
+
+        HStack {
+            Text("Peer")
+            Spacer()
+            Text(nodeName(peerPub)).monospaced()
+        }
+        HStack {
+            Text("Meetings (you / peer)")
+            Spacer()
+            Text("\(myMeetingCount) / \(peerMeetingCount)").monospaced()
+        }
+        HStack {
+            Text("Peer's rep of you")
+            Spacer()
+            Text("\(peerRepOfUs)").monospaced()
+        }
+        Group {
+            HStack {
+                Text("You sent (lifetime)")
+                Spacer()
+                Text(formatBytes(myTxLifetime)).monospaced()
+            }
+            HStack {
+                Text("You received (lifetime)")
+                Spacer()
+                Text(formatBytes(myRxLifetime)).monospaced()
+            }
+            HStack {
+                Text("Files you got from peer")
+                Spacer()
+                Text("\(myFilesFromPeer)").monospaced()
+            }
+        }
+        Group {
+            HStack {
+                Text("Peer sent (lifetime)")
+                Spacer()
+                Text(formatBytes(peerTxLifetime)).monospaced()
+            }
+            HStack {
+                Text("Peer received (lifetime)")
+                Spacer()
+                Text(formatBytes(peerRxLifetime)).monospaced()
+            }
+            HStack {
+                Text("Files peer got from you")
+                Spacer()
+                Text("\(peerFilesFromUs)").monospaced()
+            }
+        }
+    }
+
+    private func nodeName(_ pub: Data) -> String {
+        "WX:" + pub.prefix(4).map { String(format: "%02X", $0) }.joined()
+    }
+
+    private func formatBytes(_ n: UInt64) -> String {
+        if n < 1024 { return "\(n) B" }
+        let kb = Double(n) / 1024.0
+        if kb < 1024 { return String(format: "%.1f KB", kb) }
+        let mb = kb / 1024.0
+        return String(format: "%.1f MB", mb)
+    }
 }
