@@ -8,6 +8,8 @@
 #include "ble.h"
 
 #include <NimBLEDevice.h>
+#include <stdio.h>
+#include <Arduino.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -239,10 +241,15 @@ uint16_t ble_get_mtu(void) {
 }
 
 bool ble_send_file_response(const uint8_t* data, size_t len) {
-    if (!g_connected || !g_char_file_rsp) return false;
+    if (!g_connected || !g_char_file_rsp) {
+        printf("[BLE] send_file_response not connected or no char\r\n");
+        return false;
+    }
+    printf("[BLE] send_file_response len=%zu at %lu\n", len, (unsigned long)millis());
     g_char_file_rsp->setValue(data, len);
-    g_char_file_rsp->notify();
-    return true;
+    bool ret = g_char_file_rsp->notify();
+    printf("[BLE] notify returned %d\n", ret);
+    return ret;
 }
 
 void ble_set_on_connect(ble_on_connect_cb cb)       { g_cb_connect = cb; }

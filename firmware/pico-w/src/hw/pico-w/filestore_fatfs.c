@@ -27,11 +27,16 @@ static FATFS fs_obj;
 static bool  fs_mounted = false;
 
 typedef struct {
-    char     name[FS_MAX_NAME_LEN];
-    FIL      fil;
-    uint32_t expected;
-    uint32_t written;
-    bool     active;
+    char              name[FS_MAX_NAME_LEN];
+    FIL               fil;
+    uint32_t          expected;
+    uint32_t          written;
+    bool              active;
+    // Streaming SHA over data as it's appended. NULL means no eager
+    // sidecar will be written at finish — the next fs_get_hash will
+    // recompute from disk. Best-effort: a hal_sha256_init failure does
+    // not block the upload itself.
+    hal_sha256_ctx_t *sha;
 } chunk_state_t;
 
 static chunk_state_t chunk_state;
@@ -247,9 +252,10 @@ int fs_list(char (*out_names)[FS_MAX_NAME_LEN], uint32_t *out_sizes,
         strncpy(out_names[i], stage_names[start + i], FS_MAX_NAME_LEN - 1);
         out_names[i][FS_MAX_NAME_LEN - 1] = '\0';
         out_sizes[i] = stage_sizes[start + i];
-        if (fs_get_hash(out_names[i], out_hash[i]) != 0) {
-            memset(out_hash[i], 0, 8);
-        }
+        // Hashing temporarily disabled while diagnosing BLE slowdowns —
+        // returns zero hashes and skips the .h8 sidecar reads that
+        // otherwise add an f_open per page entry.
+        memset(out_hash[i], 0, 8);
     }
 
     if (next_offset) *next_offset = end < total ? end : 0;
@@ -267,14 +273,20 @@ int fs_file_size(const char *name) {
 // Stream-hashes the file at `path`. Caller is responsible for path
 // validation. Returns 0 on success with the first 8 bytes of the digest
 // in `out_hash`.
+//
+// Static read buffer sized to one FAT cluster (4 KB) so we issue ~16x
+// fewer FATFS f_read calls than a 256 B buffer for large images. Static
+// rather than stack to avoid pressuring the BLE task stack — filestore
+// is single-threaded by construction.
 static int compute_file_hash_8(const char *path, uint8_t out_hash[8]) {
+    static uint8_t buf[4096];
+
     FIL fil;
     if (f_open(&fil, path, FA_READ) != FR_OK) return -1;
 
     hal_sha256_ctx_t *s = hal_sha256_init();
     if (!s) { f_close(&fil); return -1; }
 
-    uint8_t buf[256];
     UINT br = 0;
     for (;;) {
         FRESULT res = f_read(&fil, buf, sizeof(buf), &br);
@@ -382,7 +394,9 @@ int fs_chunked_start(const char *name, uint32_t total_size) {
     if (f_open(&chunk_state.fil, path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return -1;
 
     // File was just truncated; any pre-existing hash sidecar is stale.
-    // Sidecar is regenerated lazily on the next fs_get_hash call.
+    // The streaming sha context (initialised below) eagerly repopulates
+    // it at fs_chunked_finish so the next fs_list doesn't have to
+    // re-read the file from flash to compute the hash.
     delete_hash_sidecar(name);
 
     strncpy(chunk_state.name, name, FS_MAX_NAME_LEN - 1);
@@ -390,6 +404,7 @@ int fs_chunked_start(const char *name, uint32_t total_size) {
     chunk_state.expected = total_size;
     chunk_state.written = 0;
     chunk_state.active = true;
+    chunk_state.sha = hal_sha256_init();  // best-effort; null is tolerated
     printf("[filestore] Chunked write started: %s (%u bytes)\r\n", name, (unsigned)total_size);
     return 0;
 }
@@ -405,6 +420,7 @@ int fs_chunked_append(const uint8_t *data, size_t len) {
     FRESULT res = f_write(&chunk_state.fil, data, (UINT)len, &bw);
     if (res != FR_OK || (size_t)bw != len) return -1;
     chunk_state.written += len;
+    if (chunk_state.sha) hal_sha256_update(chunk_state.sha, data, len);
     return (int)len;
 }
 
@@ -419,9 +435,21 @@ int fs_chunked_finish(const char *name) {
     if (chunk_state.written != chunk_state.expected) {
         char path[64];
         if (build_full_path(name, path, sizeof(path))) f_unlink(path);
+        if (chunk_state.sha) hal_sha256_free(chunk_state.sha);
         memset(&chunk_state, 0, sizeof(chunk_state));
         return -1;
     }
+
+    // Eager sidecar refresh from the streaming hash. If hal_sha256_init
+    // returned null at start-time the sidecar stays absent; the next
+    // fs_get_hash call will recompute from disk.
+    if (chunk_state.sha) {
+        uint8_t digest[32];
+        hal_sha256_final(chunk_state.sha, digest);
+        hal_sha256_free(chunk_state.sha);
+        write_hash_sidecar(name, digest);
+    }
+
     memset(&chunk_state, 0, sizeof(chunk_state));
     printf("[filestore] Chunked write complete: %s (%d bytes)\r\n", name, written);
     return written;
@@ -433,6 +461,7 @@ void fs_chunked_abort(const char *name) {
     f_close(&chunk_state.fil);
     char path[64];
     if (build_full_path(chunk_state.name, path, sizeof(path))) f_unlink(path);
+    if (chunk_state.sha) hal_sha256_free(chunk_state.sha);
     printf("[filestore] Chunked write aborted: %s\r\n", chunk_state.name);
     memset(&chunk_state, 0, sizeof(chunk_state));
 }

@@ -17,8 +17,8 @@ extern "C" {
 // PEER: connections from another Waxwing node over the upcoming peer
 // characteristic (M4 stage 6). Restricted to read-side and attestation-
 // exchange commands. Mutating commands (write*, delete, attestation_write)
-// and companion-private read commands (scan_get, encounters_get,
-// attestations_get) return an "companion only" error.
+// and companion-private read commands (scan_get, encounters_get) return
+// an "companion only" error.
 typedef enum {
     COMMANDS_SESSION_COMPANION = 0,
     COMMANDS_SESSION_PEER      = 1,

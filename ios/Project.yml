@@ -1,7 +1,7 @@
 name: WaxwingCompanion
 options:
   bundleIdPrefix: com.waxwing
-  deploymentTarget: "17.0"
+  deploymentTarget: "15.0"
 
 settings:
   BASE_SDK: latest
@@ -12,7 +12,7 @@ targets:
     type: application
     platform: iOS
     platforms:
-      ios: "17.0"
+      ios: "15.0"
     settings:
       base:
         INFOPLIST_FILE: WaxwingCompanion/WaxwingCompanion/Info.plist

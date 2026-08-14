@@ -222,14 +222,14 @@ struct EncountersView: View {
                 print("[EncountersView] pulled \(added) v2 encounter(s)")
             }
         }
-        bleManager.syncAttestations(node: node) { added, pushed, err in
+        bleManager.pushSelfAttestations(node: node) { pushed, err in
             DispatchQueue.main.async {
                 if let err {
-                    self.attestSyncStatus = "Sync error: \(err)"
-                } else if added == 0 && pushed == 0 {
-                    self.attestSyncStatus = "Attestations in sync"
+                    self.attestSyncStatus = "Push error: \(err)"
+                } else if pushed == 0 {
+                    self.attestSyncStatus = "No new attestations to push"
                 } else {
-                    self.attestSyncStatus = "Pulled \(added), pushed \(pushed)"
+                    self.attestSyncStatus = "Pushed \(pushed) attestation(s)"
                 }
             }
         }

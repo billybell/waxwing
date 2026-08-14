@@ -3,6 +3,9 @@
 #include "core/cbor_decode.h"
 #include "core/filestore.h"
 #include "core/manifest_counter.h"
+#include "core/encounter_record.h"
+#include "core/attest_cache.h"
+#include "core/attest_query.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -18,11 +21,22 @@
 // sized for a typical page so we don't lose entries.
 #define PEER_SYNC_PAGE 16
 
+// Attestation-fetch phase tunables. We gather BSSIDs from local
+// encounter records that we don't yet have attestations for, then ask
+// the peer for them in batches. The total cap bounds session memory;
+// the batch cap matches the responder's ATTEST_QUERY_MAX_BSSIDS so we
+// always fit in a single command.
+#define PEER_SYNC_BSSID_TOTAL_MAX 64
+#define PEER_SYNC_BSSID_BATCH_MAX 12
+#define PEER_SYNC_ENC_NAME_PREFIX     "enc_"
+#define PEER_SYNC_ENC_NAME_PREFIX_LEN 4
+
 typedef enum {
     PHASE_LS,                    // we just sent ls; expecting list page
     PHASE_READ_START,            // we just sent read_start; expecting size
     PHASE_READ_CHUNK,            // we just sent read_chunk; expecting bytes
     PHASE_READ_META,             // we just sent read_meta; expecting sidecar
+    PHASE_ATTEST_QUERY,          // we just sent attest_query; expecting blobs
     PHASE_DONE,
     PHASE_ERROR,
 } phase_t;
@@ -50,6 +64,17 @@ struct peer_sync_session {
     uint32_t cur_received;       // bytes pulled so far
     int      chunked_open;       // fs_chunked_start succeeded; abort on error
     int      file_committed;     // fs_chunked_finish succeeded for cur file
+
+    // Attestation fetch state. After the file-pull phase ends we walk
+    // local /files/enc_*.cbor records, gather every BSSID that doesn't
+    // already match a stored attestation, and ask the peer for them in
+    // batches. Re-entered for each pagination page within a batch.
+    int      attest_phase_started;             // gather has run
+    uint8_t  pending_bssids[PEER_SYNC_BSSID_TOTAL_MAX][6];
+    int      pending_count;
+    int      pending_next;                     // start index of next batch
+    int      pending_batch_size;               // size of in-flight batch
+    uint32_t attest_query_offset;              // pagination within batch
 };
 
 static struct peer_sync_session g_session;
@@ -103,6 +128,25 @@ static size_t encode_read_meta(uint8_t *out, const char *name) {
     p += cborencode_text_str(p, "read_meta", 9);
     p += cborencode_text_str(p, "name", 4);
     p += cborencode_text_str(p, name, strlen(name));
+    return (size_t)(p - out);
+}
+
+static size_t encode_attest_query(uint8_t *out, const uint8_t (*bssids)[6],
+                                  int count, uint32_t offset) {
+    uint8_t *p = out;
+    int n_keys = (offset > 0) ? 3 : 2;
+    p += cborencode_map_header(p, (uint32_t)n_keys);
+    p += cborencode_text_str(p, "cmd", 3);
+    p += cborencode_text_str(p, "attest_query", 12);
+    p += cborencode_text_str(p, "bssids", 6);
+    p += cborencode_array_header(p, (uint32_t)count);
+    for (int i = 0; i < count; i++) {
+        p += cborencode_byte_str(p, bssids[i], 6);
+    }
+    if (offset > 0) {
+        p += cborencode_text_str(p, "offset", 6);
+        p += cborencode_uint(p, offset);
+    }
     return (size_t)(p - out);
 }
 
@@ -171,6 +215,13 @@ static void start_next_file_or_finish(struct peer_sync_session *s,
                                       uint8_t *out, size_t out_max,
                                       size_t *out_len,
                                       peer_sync_step_t *out_step);
+
+static void gather_unknown_encounter_bssids(struct peer_sync_session *s);
+
+static void enter_attest_query_phase(struct peer_sync_session *s,
+                                     uint8_t *out, size_t out_max,
+                                     size_t *out_len,
+                                     peer_sync_step_t *out_step);
 
 // Skip cur file because it's a duplicate of one already on disk. Bump
 // page_idx and proceed.
@@ -242,10 +293,13 @@ static void start_next_file_or_finish(struct peer_sync_session *s,
         return;
     }
 
-    // No more files, no more pages.
-    s->phase  = PHASE_DONE;
-    *out_len  = 0;
-    *out_step = PEER_SYNC_DONE;
+    // File-pull phase exhausted. Hand off to the attestation-fetch
+    // phase: gather BSSIDs once, then page through attest_query batches.
+    if (!s->attest_phase_started) {
+        s->attest_phase_started = 1;
+        gather_unknown_encounter_bssids(s);
+    }
+    enter_attest_query_phase(s, out, out_max, out_len, out_step);
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +524,180 @@ static void handle_read_meta_response(struct peer_sync_session *s,
 }
 
 // ---------------------------------------------------------------------------
+// Attestation-fetch phase. Runs after the file-pull phase completes.
+// Walks local /files/enc_*.cbor records, gathers every BSSID we don't
+// already have an attestation for, and asks the peer for them via
+// attest_query in batches of PEER_SYNC_BSSID_BATCH_MAX (= 12 = the
+// responder's ATTEST_QUERY_MAX_BSSIDS). Responses are ingested into
+// attest_cache via attest_cache_write. Hardened against peers that
+// don't support attest_query: any error response folds the phase to
+// PHASE_DONE rather than retrying.
+// ---------------------------------------------------------------------------
+
+typedef struct { bool found; } any_match_ctx_t;
+
+static int any_match_cb(void *vctx, const uint8_t *blob, size_t len) {
+    (void)blob; (void)len;
+    ((any_match_ctx_t*)vctx)->found = true;
+    return 1;        // stop after first match
+}
+
+// True if the local self-ring or peer cache-ring already has an
+// attestation that lists this BSSID.
+static bool local_has_attestation_for(const uint8_t bssid[6]) {
+    uint8_t q[1][6];
+    memcpy(q[0], bssid, 6);
+    any_match_ctx_t c = { .found = false };
+    attest_query_for_each(q, 1, &c, any_match_cb);
+    return c.found;
+}
+
+static int bssid_already_pending(const uint8_t needle[6],
+                                 const uint8_t (*list)[6], int count) {
+    for (int i = 0; i < count; i++) {
+        if (memcmp(needle, list[i], 6) == 0) return 1;
+    }
+    return 0;
+}
+
+// Scan all local /files/enc_*.cbor records, decode each, and enqueue
+// every BSSID (from either bssids_a or bssids_b) for which we don't
+// yet have an attestation. Capped at PEER_SYNC_BSSID_TOTAL_MAX — the
+// next sync covers what didn't fit. Idempotent: re-running on a fully-
+// resolved set produces zero pending entries.
+static void gather_unknown_encounter_bssids(struct peer_sync_session *s) {
+    s->pending_count       = 0;
+    s->pending_next        = 0;
+    s->pending_batch_size  = 0;
+    s->attest_query_offset = 0;
+
+    char     names[PEER_SYNC_PAGE][FS_MAX_NAME_LEN];
+    uint32_t sizes[PEER_SYNC_PAGE];
+    uint8_t  hashes[PEER_SYNC_PAGE][8];
+    int offset = 0, next = 0;
+
+    while (s->pending_count < PEER_SYNC_BSSID_TOTAL_MAX) {
+        int avail = fs_list(names, sizes, hashes, PEER_SYNC_PAGE,
+                            offset, PEER_SYNC_PAGE, &next);
+        if (avail <= 0) break;
+
+        for (int i = 0; i < avail &&
+                        s->pending_count < PEER_SYNC_BSSID_TOTAL_MAX; i++) {
+            // Only encounter records carry BSSIDs we'd want to resolve.
+            if (strncmp(names[i], PEER_SYNC_ENC_NAME_PREFIX,
+                        PEER_SYNC_ENC_NAME_PREFIX_LEN) != 0) continue;
+            if (sizes[i] == 0 || sizes[i] > ENCOUNTER_RECORD_MAX_BYTES) continue;
+
+            uint8_t buf[ENCOUNTER_RECORD_MAX_BYTES];
+            int n = fs_read(names[i], buf, sizeof(buf));
+            if (n <= 0) continue;
+
+            encounter_record_t rec;
+            if (!encounter_record_decode(buf, (size_t)n, &rec)) continue;
+
+            for (int side = 0; side < 2; side++) {
+                int      bcount  = (side == 0) ? rec.bssids_a_count
+                                               : rec.bssids_b_count;
+                uint8_t (*bs)[6] = (side == 0) ? rec.bssids_a : rec.bssids_b;
+                for (int b = 0; b < bcount; b++) {
+                    if (s->pending_count >= PEER_SYNC_BSSID_TOTAL_MAX) break;
+                    if (bssid_already_pending(bs[b], s->pending_bssids,
+                                              s->pending_count)) continue;
+                    if (local_has_attestation_for(bs[b])) continue;
+                    memcpy(s->pending_bssids[s->pending_count], bs[b], 6);
+                    s->pending_count++;
+                }
+            }
+        }
+
+        if (next <= offset) break;
+        offset = next;
+    }
+}
+
+static void enter_attest_query_phase(struct peer_sync_session *s,
+                                     uint8_t *out, size_t out_max,
+                                     size_t *out_len,
+                                     peer_sync_step_t *out_step) {
+    if (s->pending_next >= s->pending_count) {
+        s->phase  = PHASE_DONE;
+        *out_len  = 0;
+        *out_step = PEER_SYNC_DONE;
+        return;
+    }
+
+    int batch = s->pending_count - s->pending_next;
+    if (batch > PEER_SYNC_BSSID_BATCH_MAX) batch = PEER_SYNC_BSSID_BATCH_MAX;
+    s->pending_batch_size = batch;
+
+    // Worst-case wire size: map(3) + cmd + "attest_query" + "bssids" +
+    // array(12) + 12*bstr(6) + "offset" + uint ≈ 130 bytes. The 64-byte
+    // floor that peer_sync_handle_response already enforces is enough
+    // for ls/read_meta but tight here, so require at least 200.
+    if (out_max < 200) {
+        s->phase  = PHASE_ERROR;
+        *out_len  = 0;
+        *out_step = PEER_SYNC_ERROR;
+        return;
+    }
+
+    *out_len  = encode_attest_query(out,
+                                    (const uint8_t (*)[6])
+                                        &s->pending_bssids[s->pending_next],
+                                    batch, s->attest_query_offset);
+    s->phase  = PHASE_ATTEST_QUERY;
+    *out_step = PEER_SYNC_NEED_WRITE;
+}
+
+static void handle_attest_query_response(struct peer_sync_session *s,
+                                         const uint8_t *resp, size_t resp_len,
+                                         uint8_t *out, size_t out_max,
+                                         size_t *out_len,
+                                         peer_sync_step_t *out_step) {
+    uint64_t pc = 0;
+    const uint8_t *body = NULL, *end = NULL;
+    if (parse_outer_map(resp, resp_len, &pc, &body, &end) < 0 ||
+        response_is_error(body, end, pc)) {
+        // Peer doesn't support attest_query, or returned some other
+        // failure. Don't keep hammering — finish the session cleanly;
+        // the file-pull side already succeeded.
+        s->phase  = PHASE_DONE;
+        *out_len  = 0;
+        *out_step = PEER_SYNC_DONE;
+        return;
+    }
+
+    cbor_item_t blobs;
+    if (cbor_map_find(body, end, pc, "blobs", &blobs) &&
+        blobs.type == CBOR_TYPE_ARRAY) {
+        const uint8_t *p = blobs.data;
+        for (uint64_t i = 0; i < blobs.arg; i++) {
+            cbor_item_t item;
+            if (!cbor_parse(p, end, &item)) break;
+            p = item.next;
+            if (item.type != CBOR_TYPE_BSTR || item.arg == 0) continue;
+            // Best-effort: dedup is exact-bytes inside attest_cache_write.
+            (void)attest_cache_write(item.data, (size_t)item.arg);
+        }
+    }
+
+    // If the peer reported next_offset, keep paginating the same batch.
+    uint64_t next_off = 0;
+    if (cbor_map_get_uint(body, end, pc, "next_offset", &next_off) &&
+        next_off > 0) {
+        s->attest_query_offset = (uint32_t)next_off;
+        enter_attest_query_phase(s, out, out_max, out_len, out_step);
+        return;
+    }
+
+    // Batch fully drained. Move to the next batch (or finish).
+    s->pending_next       += s->pending_batch_size;
+    s->pending_batch_size  = 0;
+    s->attest_query_offset = 0;
+    enter_attest_query_phase(s, out, out_max, out_len, out_step);
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -525,6 +753,10 @@ peer_sync_step_t peer_sync_handle_response(peer_sync_session_t *s,
         case PHASE_READ_META:
             handle_read_meta_response(s, resp, resp_len, out_buf, out_max,
                                       out_len, &step);
+            break;
+        case PHASE_ATTEST_QUERY:
+            handle_attest_query_response(s, resp, resp_len, out_buf, out_max,
+                                         out_len, &step);
             break;
         case PHASE_DONE:
             step = PEER_SYNC_DONE;

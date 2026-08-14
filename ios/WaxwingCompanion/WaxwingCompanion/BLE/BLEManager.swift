@@ -710,126 +710,85 @@ enum FileContentType {
         }
     }
 
-    /// Sync attestations with the connected node:
-    ///   1. Page through `attestations_get` (the node's self-ring — every
-    ///      attestation any companion has authored via this node).
-    ///   2. Issue `attest_query` against the current local-store BSSIDs,
-    ///      capped at the firmware's 12-bssid limit, so we also pick up
-    ///      anything that arrived in the cache-ring via peer-sync (or via
-    ///      another companion's attest_ingest push).
-    ///   3. Diff against AttestationsStore and `attest_ingest` everything
-    ///      the node didn't return — one blob per command, since each
-    ///      record is ~190 B and a single ATT MTU only fits one comfortably.
-    ///      Firmware dedups by exact bytes, so re-pushing is a no-op.
+    /// Push every self-authored attestation up to the connected node via
+    /// `attest_ingest`. The node dedups by exact bytes, so re-pushing is
+    /// a no-op for records it already has — we don't try to be clever
+    /// about which to send. Peer-received attestations are NOT pushed:
+    /// only the user's own claims travel as outbound blobs.
     ///
-    /// Completion delivers (added, pushed, error). Either count can be 0.
-    func syncAttestations(node: WaxwingNode,
-                          completion: @escaping (Int, Int, String?) -> Void) {
-        enqueueOperation { [weak self] in
-            guard let self else { return }
-            self.fetchAttestationsPage(offset: 0, accumulated: []) { [weak self] pulledFromSelf, err in
-                guard let self else { return }
-                if let err {
-                    self.finishOperation()
-                    completion(0, 0, err)
-                    return
-                }
-                // Cache-ring sweep: query the union of BSSIDs we already care
-                // about. If the local store is empty there's nothing useful
-                // to ask for, so skip straight to the push pass.
-                let queryBssids = self.attestQueryBssids()
-                if queryBssids.isEmpty {
-                    self.completeAttestSync(pulled: pulledFromSelf,
-                                             cacheHits: [],
-                                             completion: completion)
-                    return
-                }
-                self.fetchAttestQueryPage(query: queryBssids,
-                                          offset: 0,
-                                          accumulated: []) { [weak self] cacheHits, qerr in
-                    guard let self else { return }
-                    if let qerr {
-                        // Cache-ring lookup is opportunistic — if it fails,
-                        // we still completed the self-ring pull and can push.
-                        print("[BLE] attest_query failed: \(qerr) — continuing without cache-ring")
-                    }
-                    self.completeAttestSync(pulled: pulledFromSelf,
-                                             cacheHits: cacheHits,
-                                             completion: completion)
-                }
-            }
-        }
-    }
-
-    /// Build the BSSID list for `attest_query`. Caps at firmware's
-    /// ATTEST_QUERY_MAX_BSSIDS (12) and prefers the most recently captured
-    /// — those are the locations the user is most likely to be near.
-    private func attestQueryBssids() -> [Data] {
-        let recent = AttestationsStore.shared.attestations
-            .sorted { $0.capturedAt > $1.capturedAt }
-        var seen = Set<Data>()
-        var out: [Data] = []
-        for att in recent {
-            for b in att.bssids {
-                guard b.count == 6, !seen.contains(b) else { continue }
-                seen.insert(b)
-                out.append(b)
-                if out.count >= 12 { return out }
-            }
-        }
-        return out
-    }
-
-    private func completeAttestSync(pulled: [Attestation],
-                                    cacheHits: [Attestation],
-                                    completion: @escaping (Int, Int, String?) -> Void) {
-        let merged = AttestationsStore.shared.merge(pulled + cacheHits)
-
-        // Anything the node returned (either ring) is already there; push
-        // the rest.
-        let nodeKnows = Set((pulled + cacheHits).map(\.signature))
-        let toPush = AttestationsStore.shared.attestations
-            .filter { !nodeKnows.contains($0.signature) }
-
+    /// Completion delivers (pushed, error).
+    func pushSelfAttestations(node: WaxwingNode,
+                              completion: @escaping (Int, String?) -> Void) {
+        let toPush = AttestationsStore.shared.selfAttestations
         if toPush.isEmpty {
-            self.finishOperation()
-            completion(merged, 0, nil)
+            completion(0, nil)
             return
         }
-
-        self.pushAttestationsBlobs(toPush, index: 0, pushed: 0) { [weak self] pushed, perr in
+        enqueueOperation { [weak self] in
             guard let self else { return }
-            self.finishOperation()
-            completion(merged, pushed, perr)
+            self.pushAttestationsBlobs(toPush, index: 0, pushed: 0) { [weak self] pushed, err in
+                self?.finishOperation()
+                completion(pushed, err)
+            }
         }
     }
 
-    private func fetchAttestationsPage(offset: UInt64,
-                                       accumulated: [Attestation],
-                                       completion: @escaping ([Attestation], String?) -> Void) {
-        var cmd: [String: Any] = ["cmd": "attestations_get"]
-        if offset > 0 { cmd["offset"] = offset }
-        sendFileCommand(cmd) { [weak self] response in
+    /// On-demand attestation fetch: ask the connected node for any
+    /// attestations covering the given BSSIDs. Handles batching (firmware
+    /// caps at 12 BSSIDs per `attest_query`) and pagination.
+    /// Responses are merged into AttestationsStore's peer ring.
+    /// Completion delivers (added, error) — `added` is the number of new
+    /// records actually inserted (already-known signatures are deduped).
+    func requestAttestations(node: WaxwingNode,
+                             for bssids: [Data],
+                             completion: @escaping (Int, String?) -> Void) {
+        // Dedup the input list and drop anything we already cover locally
+        // — no point asking for what's already on this device.
+        let already = AttestationsStore.shared.coveredBssids
+        var seen = Set<Data>()
+        var todo: [Data] = []
+        for b in bssids {
+            guard b.count == 6, !seen.contains(b), !already.contains(b) else { continue }
+            seen.insert(b)
+            todo.append(b)
+        }
+        if todo.isEmpty {
+            completion(0, nil)
+            return
+        }
+        enqueueOperation { [weak self] in
             guard let self else { return }
-            if let error = response["error"]?.stringValue {
-                completion(accumulated, error)
+            self.requestAttestationBatches(remaining: todo, accumulated: [],
+                                           completion: completion)
+        }
+    }
+
+    /// Walk through `remaining` in chunks of 12, paginating each chunk to
+    /// completion before moving on. On any error we stop and report what
+    /// we collected — the caller decides whether to retry.
+    private func requestAttestationBatches(remaining: [Data],
+                                           accumulated: [Attestation],
+                                           completion: @escaping (Int, String?) -> Void) {
+        if remaining.isEmpty {
+            let added = AttestationsStore.shared.mergePeer(accumulated)
+            self.finishOperation()
+            completion(added, nil)
+            return
+        }
+        let batch = Array(remaining.prefix(12))
+        let rest  = Array(remaining.dropFirst(batch.count))
+        fetchAttestQueryPage(query: batch, offset: 0,
+                             accumulated: []) { [weak self] page, err in
+            guard let self else { return }
+            if let err {
+                let added = AttestationsStore.shared.mergePeer(accumulated)
+                self.finishOperation()
+                completion(added, err)
                 return
             }
-            guard case .array(let items)? = response["records"] else {
-                completion(accumulated, "invalid attestations response")
-                return
-            }
-            let page: [Attestation] = items.compactMap { item in
-                guard let blob = item.dataValue else { return nil }
-                return Attestation.parse(blob)
-            }
-            let merged = accumulated + page
-            if let next = response["next_offset"]?.uintValue {
-                self.fetchAttestationsPage(offset: next, accumulated: merged,
-                                            completion: completion)
-            } else {
-                completion(merged, nil)
-            }
+            self.requestAttestationBatches(remaining: rest,
+                                           accumulated: accumulated + page,
+                                           completion: completion)
         }
     }
 
@@ -1629,16 +1588,15 @@ extension BLEManager: CBPeripheralDelegate {
             node.identity = identity
             node.connectionState = .ready
             statusMessage = "Connected to \(node.displayName)"
-            // Fire-and-forget attestation sync so the map fills in even
-            // when the user never opens EncountersView. Errors are logged
-            // by the underlying queue; no UI plumbing needed here.
-            syncAttestations(node: node) { added, pushed, err in
-                if let err {
-                    print("[BLE] auto-sync attestations failed: \(err)")
-                } else {
-                    print("[BLE] auto-sync attestations: pulled=\(added) pushed=\(pushed)")
-                }
-            }
+            // Auto-push of self-authored attestations was hammering the
+            // node's flash on every reconnect — the firmware cache (64
+            // slots) is smaller than a typical user's attestation set
+            // (100+), so most pushes evicted-and-rewrote rather than
+            // deduping, and each rewrite re-persisted the entire 12.8 KB
+            // cache file. Disabled until peer-to-peer attestation sharing
+            // is actually wired up end-to-end and we can do this with a
+            // sane sync protocol (delta push or query-before-send).
+            // pushSelfAttestations stays defined for when that lands.
         } else {
             node.connectionState = .failed("Failed to decode identity (got \(data.count) bytes)")
         }

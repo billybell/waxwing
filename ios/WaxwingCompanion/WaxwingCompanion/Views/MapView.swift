@@ -18,9 +18,11 @@ struct MapView: View {
     @ObservedObject private var attStore  = AttestationsStore.shared
     @ObservedObject private var encStore  = EncountersStore.shared
     @ObservedObject private var encStore2 = EncountersStore2.shared
+    @EnvironmentObject private var bleManager: BLEManager
     @State private var position: MapCameraPosition = .automatic
     @State private var selection: String?
     @State private var detailPin: EncounterPin?
+    @State private var fetchStatus: String?
 
     var body: some View {
         Map(position: $position, selection: $selection) {
@@ -33,7 +35,10 @@ struct MapView: View {
             }
         }
         .navigationTitle("Map")
-        .task { encStore.loadAll() }
+        .task {
+            encStore.loadAll()
+            requestMissingAttestations()
+        }
         .overlay(alignment: .bottom) { statusOverlay }
         .onChange(of: selection) { newId in
             // Open the per-pin detail sheet when a v2 pin is tapped.
@@ -78,6 +83,48 @@ struct MapView: View {
             .padding()
     }
 
+    /// On-demand attestation fetch. Computes the union of BSSIDs across
+    /// all loaded encounters that AttestationsStore can't already
+    /// resolve, then asks the first connected node for them in batches.
+    /// Skipped silently if no node is connected — re-runs when the map
+    /// re-appears, which is typically after a connection.
+    private func requestMissingAttestations() {
+        // First connected node wins. We don't ask multiple nodes for the
+        // same BSSIDs since attestations dedup by signature anyway.
+        guard let node = bleManager.discoveredNodes.first(where: {
+            $0.connectionState == .ready
+        }) else { return }
+
+        var missing = Set<Data>()
+        for (_, recs) in encStore.byNode {
+            for rec in recs {
+                for b in rec.bssids where !attStore.hasAttestation(for: b) {
+                    missing.insert(b)
+                }
+            }
+        }
+        for rec in encStore2.records {
+            for b in rec.allBssids where !attStore.hasAttestation(for: b) {
+                missing.insert(b)
+            }
+        }
+        if missing.isEmpty { return }
+
+        let bssids = Array(missing)
+        fetchStatus = "Fetching \(bssids.count) attestation\(bssids.count == 1 ? "" : "s")…"
+        bleManager.requestAttestations(node: node, for: bssids) { added, err in
+            DispatchQueue.main.async {
+                if let err {
+                    fetchStatus = "Fetch error: \(err)"
+                } else if added > 0 {
+                    fetchStatus = "Added \(added) attestation\(added == 1 ? "" : "s")"
+                } else {
+                    fetchStatus = nil
+                }
+            }
+        }
+    }
+
     private var pins: [EncounterPin] {
         // BSSID → geohash from the most recent attestation that covers
         // that BSSID. Most-recent wins on ties so a moved AP relocates
@@ -110,21 +157,7 @@ struct MapView: View {
         var buckets: [String: Bucket] = [:]
 
         // --- v1 (single-author, soon-to-retire) ---------------------
-        for (_, recs) in encStore.byNode {
-            for rec in recs {
-                var hits: [String: Int] = [:]
-                for b in rec.bssids {
-                    if let g = bssidGeohash[b] { hits[g, default: 0] += 1 }
-                }
-                guard let best = hits.max(by: { $0.value < $1.value })?.key else { continue }
-                let nodeHex = rec.nodePub.map { String(format: "%02x", $0) }.joined()
-                let key     = nodeHex + "|" + best
-                if buckets[key] == nil {
-                    buckets[key] = Bucket(nodePub: rec.nodePub, geohash: best, isV2: false)
-                }
-                buckets[key]!.count += 1
-            }
-        }
+        // Skipped — v1 records have no tx/rx byte data, so they are invisible under this filter.
 
         // --- v2 (two-party verifiable) ------------------------------
         // Both bssidsA and bssidsB count toward locating the encounter:
@@ -132,6 +165,13 @@ struct MapView: View {
         // cell. We add buckets for pubA AND pubB so the map shows the
         // co-presence event from both perspectives.
         for rec in encStore2.records {
+            // Only include encounters where bytes have actually been exchanged
+            let totalBytes = rec.txBytesAtoBLifetime
+                          + rec.rxBytesAfromBLifetime
+                          + rec.txBytesBtoALifetime
+                          + rec.rxBytesBfromALifetime
+            guard totalBytes > 0 else { continue }
+
             var hits: [String: Int] = [:]
             for b in rec.allBssids {
                 if let g = bssidGeohash[b] { hits[g, default: 0] += 1 }

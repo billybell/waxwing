@@ -1,6 +1,7 @@
 #include <M5Cardputer.h>
 
 #include "hw/ble.h"
+#include <NimBLEDevice.h>
 #include "hw/ble_client.h"
 #include "hw/ssid_scan_esp32.h"
 
@@ -40,6 +41,7 @@ size_t   g_last_write_len   = 0;
 uint32_t g_last_resp_len    = 0;
 uint32_t g_dropped_cmds     = 0;
 bool     g_sd_ready         = false;
+uint32_t g_mtu_ready_time   = 0;   // time (ms) after which we consider MTU ready for file transfers
 
 uint8_t g_resp_buf[512];
 
@@ -174,6 +176,11 @@ inline bool send_outbound(const uint8_t *data, size_t len) {
 
 void on_inbound_connect(uint16_t handle) {
     g_last_conn_handle = handle;
+    // Request a better connection interval for higher throughput
+    // minInterval and maxInterval in units of 1.25ms (e.g., 12 = 15ms)
+    // latency = 0, timeout = 400 (4 seconds)
+    NimBLEDevice::getServer()->updateConnParams(handle, 12, 12, 0, 400);
+
     arm_responder_session();
     mesh_state_on_connected(now_ms());
 }
@@ -199,18 +206,24 @@ void on_file_command(const uint8_t *data, size_t len) {
     std::memcpy(entry.data, data, len);
     if (xQueueSend(g_cmd_queue, &entry, 0) != pdTRUE) {
         g_dropped_cmds++;
+    } else {
+        printf("[DBG] File command queued len=%zu at %lu\n", len, now_ms());
     }
 }
 
 void process_pending_commands() {
     CmdEntry entry;
     while (xQueueReceive(g_cmd_queue, &entry, 0) == pdTRUE) {
+        printf("[DBG] Processing command len=%zu at %lu\n", entry.len, now_ms());
         int resp_len = commands_handle(entry.data, entry.len,
                                        g_resp_buf, sizeof(g_resp_buf));
+        printf("[DBG] commands_handle returned %d at %lu\n", resp_len, now_ms());
         g_last_write_len = entry.len;
         g_last_resp_len  = resp_len > 0 ? static_cast<uint32_t>(resp_len) : 0;
         if (resp_len > 0 && ble_is_connected()) {
+            printf("[DBG] Sending response len=%d at %lu\n", resp_len, now_ms());
             ble_send_file_response(g_resp_buf, static_cast<size_t>(resp_len));
+            printf("[DBG] Response sent\n");
         }
         ble_set_manifest_version(manifest_counter_get());
     }
@@ -477,6 +490,11 @@ void start_peer_sync() {
 
 void on_client_connected() {
     mesh_state_on_connected(now_ms());
+
+    // Request a better connection interval for higher throughput
+    // minInterval and maxInterval in units of 1.25ms (e.g., 12 = 15ms)
+    // latency = 0, timeout = 400 (4 seconds)
+    NimBLEDevice::getServer()->updateConnParams(ble_get_conn_handle(), 12, 12, 0, 400);
 
     if (!ble_client_uses_peer_characteristic()) {
         std::printf("[mesh] peer has no peer_cmd; legacy peer_sync path\r\n");
@@ -754,10 +772,14 @@ size_t getArduinoLoopTaskStackSize(void) {
 
 void loop() {
     M5Cardputer.update();
+    uint32_t loop_start = now_ms();
     ble_process();
     ble_client_process();
+
+    // Process commands every loop iteration
     process_pending_commands();
     process_pending_peer_commands();
+
     apply_mesh_action(mesh_state_tick(now_ms()));
 
     cardputer_ssid_scan_tick(now_ms(), mesh_state_phase() == MESH_CONNECTED);
@@ -790,4 +812,8 @@ void loop() {
     }
 
     delay(20);
+    uint32_t loop_elapsed = now_ms() - loop_start;
+    if (loop_elapsed > 50) {
+        printf("[LOOP] iteration took %lu ms\n", loop_elapsed);
+    }
 }

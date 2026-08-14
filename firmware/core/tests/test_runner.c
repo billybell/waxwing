@@ -102,6 +102,13 @@ extern void test_peer_sync_meta_error_is_best_effort(void);
 extern void test_peer_sync_end_aborts_in_flight(void);
 extern void test_peer_sync_only_one_session_at_a_time(void);
 extern void test_peer_sync_envelope_fits_mtu(void);
+extern void test_peer_sync_attest_phase_no_encounters_no_query(void);
+extern void test_peer_sync_attest_phase_queries_unknown_bssids(void);
+extern void test_peer_sync_attest_phase_skips_known_bssids(void);
+extern void test_peer_sync_attest_phase_ingests_response_blobs(void);
+extern void test_peer_sync_attest_phase_paginates(void);
+extern void test_peer_sync_attest_phase_multi_batch(void);
+extern void test_peer_sync_attest_phase_peer_error_finishes_done(void);
 
 extern void test_ssid_scan_init_empty(void);
 extern void test_ssid_scan_random_bssid_filtered(void);
@@ -120,7 +127,6 @@ extern void test_peer_gate_companion_only_delete_rejected(void);
 extern void test_peer_gate_companion_only_scan_get_rejected(void);
 extern void test_peer_gate_companion_only_encounters_get_rejected(void);
 extern void test_peer_gate_companion_only_attestation_write_rejected(void);
-extern void test_peer_gate_companion_only_attestations_get_rejected(void);
 extern void test_peer_gate_ls_allowed(void);
 extern void test_peer_gate_storage_info_allowed(void);
 extern void test_peer_gate_unknown_cmd_still_unknown(void);
@@ -315,6 +321,13 @@ int main(void) {
     TEST_RUN(test_peer_sync_end_aborts_in_flight);
     TEST_RUN(test_peer_sync_only_one_session_at_a_time);
     TEST_RUN(test_peer_sync_envelope_fits_mtu);
+    TEST_RUN(test_peer_sync_attest_phase_no_encounters_no_query);
+    TEST_RUN(test_peer_sync_attest_phase_queries_unknown_bssids);
+    TEST_RUN(test_peer_sync_attest_phase_skips_known_bssids);
+    TEST_RUN(test_peer_sync_attest_phase_ingests_response_blobs);
+    TEST_RUN(test_peer_sync_attest_phase_paginates);
+    TEST_RUN(test_peer_sync_attest_phase_multi_batch);
+    TEST_RUN(test_peer_sync_attest_phase_peer_error_finishes_done);
 
     TEST_RUN(test_ssid_scan_init_empty);
     TEST_RUN(test_ssid_scan_random_bssid_filtered);
@@ -333,7 +346,6 @@ int main(void) {
     TEST_RUN(test_peer_gate_companion_only_scan_get_rejected);
     TEST_RUN(test_peer_gate_companion_only_encounters_get_rejected);
     TEST_RUN(test_peer_gate_companion_only_attestation_write_rejected);
-    TEST_RUN(test_peer_gate_companion_only_attestations_get_rejected);
     TEST_RUN(test_peer_gate_ls_allowed);
     TEST_RUN(test_peer_gate_storage_info_allowed);
     TEST_RUN(test_peer_gate_unknown_cmd_still_unknown);
@@ -429,6 +441,6 @@ int main(void) {
     TEST_RUN(test_cmd_attest_ingest_dedup_counts);
     TEST_RUN(test_cmd_attest_ingest_missing_blobs);
 
-    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 192, test_failures);
+    printf("\n%d test(s) ran. %d assertion(s) failed.\n", 198, test_failures);
     return test_failures;
 }

@@ -4,6 +4,9 @@
 #include "core/cbor_decode.h"
 #include "core/filestore.h"
 #include "core/manifest_counter.h"
+#include "core/encounter_record.h"
+#include "core/attest_cache.h"
+#include "core/attestations.h"
 #include "mock_filestore.h"
 
 #include <string.h>
@@ -141,6 +144,92 @@ static int local_file_bytes_match(const char *name,
 static void clear_state(void) {
     mock_fs_clear();
     manifest_counter_init();
+    attest_cache_reset();
+    attest_cache_init();
+    attestations_reset();
+    attestations_init();
+}
+
+// ---------------------------------------------------------------------------
+// Encounter-record + attest_query helpers used by the attestation-phase
+// tests. The encounter-record decoder is real; we synthesize records
+// with known BSSID arrays and write them straight into mock_fs.
+// ---------------------------------------------------------------------------
+
+static void seed_encounter_record(const char *name,
+                                  const uint8_t bssids_a[][6], int n_a,
+                                  const uint8_t bssids_b[][6], int n_b) {
+    encounter_record_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.version        = ENCOUNTER_RECORD_VERSION;
+    rec.bssids_a_count = (uint8_t)n_a;
+    rec.bssids_b_count = (uint8_t)n_b;
+    for (int i = 0; i < n_a && i < ENCOUNTER_BSSID_MAX; i++) {
+        memcpy(rec.bssids_a[i], bssids_a[i], 6);
+    }
+    for (int i = 0; i < n_b && i < ENCOUNTER_BSSID_MAX; i++) {
+        memcpy(rec.bssids_b[i], bssids_b[i], 6);
+    }
+    uint8_t buf[ENCOUNTER_RECORD_MAX_BYTES];
+    size_t  len = encounter_record_encode_full(&rec, buf, sizeof(buf));
+    if (len > 0) mock_fs_add_entry(name, buf, len);
+}
+
+// Build a minimum-shape attestation blob (CBOR map with int key 4 = bssid
+// list). The firmware never validates signatures, only uses key 4 to
+// match against attest_query inputs. Any extra bytes for verisimilitude
+// would be ignored by the responder; we keep the blob terse.
+static size_t build_attestation_blob(uint8_t *out, const uint8_t bssid[6]) {
+    uint8_t *p = out;
+    p += cborencode_map_header(p, 1);
+    p += cborencode_uint(p, 4);                 // key 4 = bssid list
+    p += cborencode_array_header(p, 1);
+    p += cborencode_byte_str(p, bssid, 6);
+    return (size_t)(p - out);
+}
+
+static size_t build_attest_query_response(uint8_t *out,
+                                          const uint8_t **blobs,
+                                          const size_t  *lens,
+                                          int n_blobs,
+                                          uint32_t next_offset) {
+    uint8_t *p = out;
+    int n_keys = (next_offset > 0) ? 3 : 2;
+    p += cborencode_map_header(p, (uint32_t)n_keys);
+    p += cborencode_text_str(p, "ok", 2);
+    p += cborencode_bool(p, 1);
+    p += cborencode_text_str(p, "blobs", 5);
+    p += cborencode_array_header(p, (uint32_t)n_blobs);
+    for (int i = 0; i < n_blobs; i++) {
+        p += cborencode_byte_str(p, blobs[i], lens[i]);
+    }
+    if (next_offset > 0) {
+        p += cborencode_text_str(p, "next_offset", 11);
+        p += cborencode_uint(p, next_offset);
+    }
+    return (size_t)(p - out);
+}
+
+// Decode the bssids array out of the most recent emitted command. Used
+// to assert which BSSIDs peer_sync chose to query for.
+static int tx_get_bssids(uint8_t out_bssids[][6], int max) {
+    cbor_item_t root;
+    if (!cbor_parse(tx_buf, tx_buf + tx_len, &root) ||
+        root.type != CBOR_TYPE_MAP) return -1;
+    cbor_item_t arr;
+    if (!cbor_map_find(root.data, tx_buf + tx_len, root.arg, "bssids", &arr) ||
+        arr.type != CBOR_TYPE_ARRAY) return -1;
+    int n = 0;
+    const uint8_t *p = arr.data;
+    for (uint64_t i = 0; i < arr.arg && n < max; i++) {
+        cbor_item_t it;
+        if (!cbor_parse(p, tx_buf + tx_len, &it)) return -1;
+        p = it.next;
+        if (it.type != CBOR_TYPE_BSTR || it.arg != 6) continue;
+        memcpy(out_bssids[n], it.data, 6);
+        n++;
+    }
+    return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -642,5 +731,241 @@ void test_peer_sync_envelope_fits_mtu(void) {
     step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
                                      sizeof(tx_buf), &tx_len);
     TEST_ASSERT(step == PEER_SYNC_DONE, "session done");
+    peer_sync_end(s);
+}
+
+// ---------------------------------------------------------------------------
+// Attestation-fetch phase: after the file-pull phase finishes, peer_sync
+// scans local /files/enc_*.cbor records and asks the peer (via
+// attest_query) for any BSSIDs we don't yet have a covering attestation
+// for. Responses are ingested into attest_cache.
+// ---------------------------------------------------------------------------
+
+// No local encounter records → the gather step finds nothing → no
+// attest_query is ever emitted, session ends DONE on the empty ls.
+void test_peer_sync_attest_phase_no_encounters_no_query(void) {
+    clear_state();
+    peer_sync_step_t step;
+    peer_sync_session_t *s = peer_sync_start(TPK_PREFIX, tx_buf,
+                                              sizeof(tx_buf), &tx_len, &step);
+    resp_len = build_ls_response(resp_buf, NULL, 0, 0);
+    step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                                     sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(step == PEER_SYNC_DONE,
+                "no encounters → no attest_query, DONE on empty ls");
+    peer_sync_end(s);
+}
+
+// Encounter with unknown BSSIDs on both sides → attest_query is emitted
+// carrying every one of them.
+void test_peer_sync_attest_phase_queries_unknown_bssids(void) {
+    clear_state();
+
+    uint8_t a[2][6] = { { 0x01,1,1,1,1,1 }, { 0x02,2,2,2,2,2 } };
+    uint8_t b[1][6] = { { 0x03,3,3,3,3,3 } };
+    seed_encounter_record("enc_aabb.cbor", a, 2, b, 1);
+
+    peer_sync_step_t step;
+    peer_sync_session_t *s = peer_sync_start(TPK_PREFIX, tx_buf,
+                                              sizeof(tx_buf), &tx_len, &step);
+    resp_len = build_ls_response(resp_buf, NULL, 0, 0);
+    step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                                     sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(step == PEER_SYNC_NEED_WRITE && tx_is_cmd("attest_query"),
+                "post-pull → attest_query emitted");
+    TEST_ASSERT(tx_get_uint("offset") == UINT64_MAX,
+                "first attest_query omits the offset key");
+
+    uint8_t got[16][6];
+    int n = tx_get_bssids(got, 16);
+    TEST_ASSERT(n == 3, "all 3 BSSIDs from both sides included");
+
+    resp_len = build_attest_query_response(resp_buf, NULL, NULL, 0, 0);
+    step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                                     sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(step == PEER_SYNC_DONE,
+                "empty response with no next_offset → DONE");
+    peer_sync_end(s);
+}
+
+// A BSSID covered by the local self-ring is filtered out before the
+// query is built — the peer is only asked for what we don't have.
+void test_peer_sync_attest_phase_skips_known_bssids(void) {
+    clear_state();
+
+    uint8_t known[6]   = { 0x10,1,2,3,4,5 };
+    uint8_t unknown[6] = { 0x20,6,7,8,9,10 };
+
+    uint8_t blob[64];
+    size_t  blob_len = build_attestation_blob(blob, known);
+    TEST_ASSERT(attestations_write(blob, blob_len) == 0,
+                "self-ring write succeeded");
+
+    uint8_t a[2][6];
+    memcpy(a[0], known, 6);
+    memcpy(a[1], unknown, 6);
+    seed_encounter_record("enc_xx.cbor", a, 2, NULL, 0);
+
+    peer_sync_step_t step;
+    peer_sync_session_t *s = peer_sync_start(TPK_PREFIX, tx_buf,
+                                              sizeof(tx_buf), &tx_len, &step);
+    resp_len = build_ls_response(resp_buf, NULL, 0, 0);
+    step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                                     sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(step == PEER_SYNC_NEED_WRITE && tx_is_cmd("attest_query"),
+                "attest_query emitted for the unknown BSSID");
+
+    uint8_t got[8][6];
+    int n = tx_get_bssids(got, 8);
+    TEST_ASSERT(n == 1, "only the unknown BSSID is queried");
+    TEST_ASSERT(memcmp(got[0], unknown, 6) == 0,
+                "queried BSSID is the unknown one");
+    peer_sync_end(s);
+}
+
+// Response blobs are stored in attest_cache. Subsequent queries for the
+// same BSSID would dedup at the local self-ring/cache lookup.
+void test_peer_sync_attest_phase_ingests_response_blobs(void) {
+    clear_state();
+
+    uint8_t bssid1[6] = { 0x11,1,1,1,1,1 };
+    uint8_t bssid2[6] = { 0x22,2,2,2,2,2 };
+
+    uint8_t a[1][6];
+    memcpy(a[0], bssid1, 6);
+    seed_encounter_record("enc_zz.cbor", a, 1, NULL, 0);
+
+    peer_sync_step_t step;
+    peer_sync_session_t *s = peer_sync_start(TPK_PREFIX, tx_buf,
+                                              sizeof(tx_buf), &tx_len, &step);
+    resp_len = build_ls_response(resp_buf, NULL, 0, 0);
+    peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                              sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(tx_is_cmd("attest_query"), "attest_query emitted");
+
+    uint8_t blob1[64], blob2[64];
+    size_t  l1 = build_attestation_blob(blob1, bssid1);
+    size_t  l2 = build_attestation_blob(blob2, bssid2);
+    const uint8_t *blobs[2] = { blob1, blob2 };
+    size_t         lens[2]  = { l1, l2 };
+
+    int before = attest_cache_count();
+    resp_len = build_attest_query_response(resp_buf, blobs, lens, 2, 0);
+    step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                                     sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(step == PEER_SYNC_DONE, "session DONE after ingest");
+    TEST_ASSERT(attest_cache_count() == before + 2,
+                "both response blobs ingested into attest_cache");
+    peer_sync_end(s);
+}
+
+// next_offset on the response → re-query the same BSSID batch with that
+// offset before advancing.
+void test_peer_sync_attest_phase_paginates(void) {
+    clear_state();
+
+    uint8_t bssid[6] = { 0x33,3,3,3,3,3 };
+    uint8_t a[1][6];
+    memcpy(a[0], bssid, 6);
+    seed_encounter_record("enc_pp.cbor", a, 1, NULL, 0);
+
+    peer_sync_step_t step;
+    peer_sync_session_t *s = peer_sync_start(TPK_PREFIX, tx_buf,
+                                              sizeof(tx_buf), &tx_len, &step);
+    resp_len = build_ls_response(resp_buf, NULL, 0, 0);
+    peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                              sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(tx_is_cmd("attest_query"), "first attest_query sent");
+    TEST_ASSERT(tx_get_uint("offset") == UINT64_MAX,
+                "first attest_query has no offset");
+
+    uint8_t blob[64];
+    size_t  bl = build_attestation_blob(blob, bssid);
+    const uint8_t *blobs[1] = { blob };
+    size_t         lens[1]  = { bl };
+
+    resp_len = build_attest_query_response(resp_buf, blobs, lens, 1, /*next=*/1);
+    step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                                     sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(step == PEER_SYNC_NEED_WRITE && tx_is_cmd("attest_query"),
+                "next_offset → another attest_query");
+    TEST_ASSERT(tx_get_uint("offset") == 1,
+                "second query carries the reported offset");
+
+    uint8_t got[2][6];
+    int n = tx_get_bssids(got, 2);
+    TEST_ASSERT(n == 1 && memcmp(got[0], bssid, 6) == 0,
+                "same BSSID re-queried for next page");
+
+    resp_len = build_attest_query_response(resp_buf, NULL, NULL, 0, 0);
+    step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                                     sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(step == PEER_SYNC_DONE, "drained → DONE");
+    peer_sync_end(s);
+}
+
+// > 12 unknown BSSIDs (the per-batch cap) → multiple attest_query
+// rounds, each carrying a different slice of the pending list.
+void test_peer_sync_attest_phase_multi_batch(void) {
+    clear_state();
+
+    // 8 BSSIDs on each side, all unique → 16 unknowns. Cap is 12, so
+    // two batches: 12 then 4.
+    uint8_t a[8][6], b[8][6];
+    for (int i = 0; i < 8; i++) {
+        for (int k = 0; k < 6; k++) a[i][k] = (uint8_t)(0x40 + i);
+        for (int k = 0; k < 6; k++) b[i][k] = (uint8_t)(0x80 + i);
+    }
+    seed_encounter_record("enc_mm.cbor", a, 8, b, 8);
+
+    peer_sync_step_t step;
+    peer_sync_session_t *s = peer_sync_start(TPK_PREFIX, tx_buf,
+                                              sizeof(tx_buf), &tx_len, &step);
+    resp_len = build_ls_response(resp_buf, NULL, 0, 0);
+    peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                              sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(tx_is_cmd("attest_query"), "first batch sent");
+    uint8_t got[16][6];
+    int n = tx_get_bssids(got, 16);
+    TEST_ASSERT(n == 12, "first batch holds the 12-bssid cap");
+
+    resp_len = build_attest_query_response(resp_buf, NULL, NULL, 0, 0);
+    step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                                     sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(step == PEER_SYNC_NEED_WRITE && tx_is_cmd("attest_query"),
+                "advance to second batch");
+    n = tx_get_bssids(got, 16);
+    TEST_ASSERT(n == 4, "second batch holds the remaining 4 BSSIDs");
+
+    resp_len = build_attest_query_response(resp_buf, NULL, NULL, 0, 0);
+    step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                                     sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(step == PEER_SYNC_DONE, "all batches drained → DONE");
+    peer_sync_end(s);
+}
+
+// Older peer that doesn't recognise attest_query returns an error
+// response. Don't keep retrying — just finish the session DONE.
+void test_peer_sync_attest_phase_peer_error_finishes_done(void) {
+    clear_state();
+
+    uint8_t bssid[6] = { 0x55,5,5,5,5,5 };
+    uint8_t a[1][6];
+    memcpy(a[0], bssid, 6);
+    seed_encounter_record("enc_qq.cbor", a, 1, NULL, 0);
+
+    peer_sync_step_t step;
+    peer_sync_session_t *s = peer_sync_start(TPK_PREFIX, tx_buf,
+                                              sizeof(tx_buf), &tx_len, &step);
+    resp_len = build_ls_response(resp_buf, NULL, 0, 0);
+    peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                              sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(tx_is_cmd("attest_query"), "attest_query emitted");
+
+    resp_len = build_error(resp_buf, "companion only");
+    step = peer_sync_handle_response(s, resp_buf, resp_len, tx_buf,
+                                     sizeof(tx_buf), &tx_len);
+    TEST_ASSERT(step == PEER_SYNC_DONE,
+                "peer error on attest_query → DONE, not ERROR");
     peer_sync_end(s);
 }

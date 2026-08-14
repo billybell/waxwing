@@ -28,10 +28,10 @@
 	<string>Waxwing uses the camera to capture photos for uploading to your Waxwing mesh node.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Your location is used to geo-tag images you share with the Waxwing mesh.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Waxwing needs photo library access to select photos for upload.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Waxwing saves processed images to your photo library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Waxwing needs photo library access to select photos for upload.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

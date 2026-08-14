@@ -39,13 +39,25 @@ constexpr int         kListStageMax   = 64;
 bool g_mounted = false;
 
 struct ChunkState {
-    char     name[FS_MAX_NAME_LEN];
-    File     file;
-    uint32_t expected;
-    uint32_t written;
-    bool     active;
+    char              name[FS_MAX_NAME_LEN];
+    File              file;
+    uint32_t          expected;
+    uint32_t          written;
+    bool              active;
+    // Streaming SHA over data as it's appended. nullptr means no eager
+    // sidecar will be written at finish — fs_get_hash recomputes from
+    // disk on the next call. A hal_sha256_init failure does not block
+    // the upload itself.
+    hal_sha256_ctx_t *sha;
+};
+
+struct ReadState {
+    char              name[FS_MAX_NAME_LEN];
+    File              file;
+    bool              active;
 };
 ChunkState g_chunk;
+ReadState g_read;
 
 bool has_suffix(const char *name, const char *suffix) {
     const size_t nl = std::strlen(name);
@@ -133,6 +145,7 @@ extern "C" int fs_init(void) {
         return -1;
     }
     std::memset(&g_chunk, 0, sizeof(g_chunk));
+    std::memset(&g_read, 0, sizeof(g_read));
     g_mounted = true;
     return 0;
 }
@@ -146,8 +159,15 @@ extern "C" int fs_list(char (*out_names)[FS_MAX_NAME_LEN], uint32_t *out_sizes,
                        int limit, int *next_offset) {
     if (!g_mounted) return -1;
 
+    uint32_t t0 = millis();
     File dir = SD.open(kFilesDir);
-    if (!dir || !dir.isDirectory()) return -1;
+    uint32_t t1 = millis();
+    uint32_t open_dur = t1 - t0;
+    if (!dir || !dir.isDirectory()) {
+        if (open_dur > 4) std::printf("[filestore] fs_list open dir took %lu ms\r\n", (unsigned long)open_dur);
+        return -1;
+    }
+    if (open_dur > 4) std::printf("[filestore] fs_list open dir took %lu ms\r\n", (unsigned long)open_dur);
 
     char     stage_names[kListStageMax][FS_MAX_NAME_LEN];
     uint32_t stage_sizes[kListStageMax];
@@ -155,7 +175,11 @@ extern "C" int fs_list(char (*out_names)[FS_MAX_NAME_LEN], uint32_t *out_sizes,
 
     for (File f = dir.openNextFile(); f && total < kListStageMax;
          f = dir.openNextFile()) {
-        if (f.isDirectory()) { f.close(); continue; }
+        uint32_t ft0 = millis();
+        if (f.isDirectory()) { 
+            f.close(); 
+            continue; 
+        }
         const char *fname = f.name();
         // Some Arduino SD cores return the full path here; reduce to leaf.
         const char *slash = std::strrchr(fname, '/');
@@ -167,7 +191,12 @@ extern "C" int fs_list(char (*out_names)[FS_MAX_NAME_LEN], uint32_t *out_sizes,
         stage_sizes[total] = static_cast<uint32_t>(f.size());
         total++;
         f.close();
+        uint32_t entry_dur = millis() - ft0;
+        if (entry_dur > 4) {
+            std::printf("[filestore] fs_list entry %d took %lu ms\r\n", total, (unsigned long)entry_dur);
+        }
     }
+
     dir.close();
 
     // Insertion sort, alphabetical. Tiny dataset; matches Pico W.
@@ -196,9 +225,10 @@ extern "C" int fs_list(char (*out_names)[FS_MAX_NAME_LEN], uint32_t *out_sizes,
         std::strncpy(out_names[i], stage_names[start + i], FS_MAX_NAME_LEN - 1);
         out_names[i][FS_MAX_NAME_LEN - 1] = '\0';
         out_sizes[i] = stage_sizes[start + i];
-        if (fs_get_hash(out_names[i], out_hash[i]) != 0) {
-            std::memset(out_hash[i], 0, 8);
-        }
+        // Hashing temporarily disabled while diagnosing BLE slowdowns —
+        // returns zero hashes and skips the .h8 sidecar reads that
+        // otherwise add an SD.open per page entry.
+        std::memset(out_hash[i], 0, 8);
     }
 
     if (next_offset) *next_offset = end < total ? end : 0;
@@ -218,14 +248,18 @@ extern "C" int fs_file_size(const char *name) {
 
 namespace {
 
+// Static read buffer sized to one cluster (4 KB) so we issue ~16x fewer
+// f.read calls than a 256 B buffer for large images. Static rather than
+// stack to keep the BLE task stack quiet — filestore is single-threaded.
 int compute_file_hash_8(const char *path, uint8_t out_hash[8]) {
+    static uint8_t buf[4096];
+
     File f = SD.open(path, FILE_READ);
     if (!f) return -1;
 
     hal_sha256_ctx_t *s = hal_sha256_init();
     if (!s) { f.close(); return -1; }
 
-    uint8_t buf[256];
     for (;;) {
         int n = f.read(buf, sizeof(buf));
         if (n < 0) {
@@ -325,7 +359,10 @@ extern "C" int fs_chunked_start(const char *name, uint32_t total_size) {
 
     File f = SD.open(path, FILE_WRITE, /*create=*/true);
     if (!f) return -1;
-    // File is about to be overwritten — drop stale hash sidecar.
+    // File is about to be overwritten — drop stale hash sidecar. The
+    // streaming sha context (initialised below) eagerly repopulates it
+    // at fs_chunked_finish so the next fs_list doesn't have to re-read
+    // the file from the SD card to compute the hash.
     delete_hash_sidecar(name);
     g_chunk.file = f;
     std::strncpy(g_chunk.name, name, FS_MAX_NAME_LEN - 1);
@@ -333,6 +370,7 @@ extern "C" int fs_chunked_start(const char *name, uint32_t total_size) {
     g_chunk.expected = total_size;
     g_chunk.written  = 0;
     g_chunk.active   = true;
+    g_chunk.sha      = hal_sha256_init();  // best-effort; null is tolerated
     std::printf("[filestore] Chunked write started: %s (%u bytes)\r\n", name,
                 static_cast<unsigned>(total_size));
     return 0;
@@ -347,6 +385,7 @@ extern "C" int fs_chunked_append(const uint8_t *data, size_t len) {
     size_t bw = g_chunk.file.write(data, len);
     if (bw != len) return -1;
     g_chunk.written += len;
+    if (g_chunk.sha) hal_sha256_update(g_chunk.sha, data, len);
     return static_cast<int>(len);
 }
 
@@ -361,9 +400,21 @@ extern "C" int fs_chunked_finish(const char *name) {
     if (g_chunk.written != g_chunk.expected) {
         char path[64];
         if (build_path(kFilesDir, name, path, sizeof(path))) SD.remove(path);
+        if (g_chunk.sha) hal_sha256_free(g_chunk.sha);
         std::memset(&g_chunk, 0, sizeof(g_chunk));
         return -1;
     }
+
+    // Eager sidecar refresh from the streaming hash. If hal_sha256_init
+    // returned null at start-time the sidecar stays absent; the next
+    // fs_get_hash call will recompute from disk.
+    if (g_chunk.sha) {
+        uint8_t digest[32];
+        hal_sha256_final(g_chunk.sha, digest);
+        hal_sha256_free(g_chunk.sha);
+        write_hash_sidecar(name, digest);
+    }
+
     std::memset(&g_chunk, 0, sizeof(g_chunk));
     std::printf("[filestore] Chunked write complete: %s (%d bytes)\r\n", name, written);
     return written;
@@ -375,6 +426,7 @@ extern "C" void fs_chunked_abort(const char *name) {
     g_chunk.file.close();
     char path[64];
     if (build_path(kFilesDir, g_chunk.name, path, sizeof(path))) SD.remove(path);
+    if (g_chunk.sha) hal_sha256_free(g_chunk.sha);
     std::printf("[filestore] Chunked write aborted: %s\r\n", g_chunk.name);
     std::memset(&g_chunk, 0, sizeof(g_chunk));
 }
@@ -388,20 +440,86 @@ extern "C" const char *fs_chunked_in_progress(void) {
 // ---------------------------------------------------------------------------
 
 extern "C" int fs_read_start(const char *name) {
-    return fs_file_size(name);
+    if (!g_mounted) return -1;
+
+    // Close any previously open read session.
+    if (g_read.active) {
+        g_read.file.close();
+        g_read.active = false;
+    }
+
+    char path[64];
+    if (!build_path(kFilesDir, name, path, sizeof(path))) return -1;
+    
+    uint32_t t0 = millis();
+    File f = SD.open(path, FILE_READ);
+    uint32_t t1 = millis();
+    if (!f) {
+        std::printf("[filestore] fs_read_start open %s failed in %lu ms\r\n", path, (unsigned long)(t1 - t0));
+        return -1;
+    }
+    std::printf("[filestore] fs_read_start open %s took %lu ms\r\n", path, (unsigned long)(t1 - t0));
+
+    int sz = static_cast<int>(f.size());
+
+    // Cache for chunked reading.
+    std::strncpy(g_read.name, name, FS_MAX_NAME_LEN - 1);
+    g_read.name[FS_MAX_NAME_LEN - 1] = '\0';
+    g_read.file = f;
+    g_read.active = true;
+
+    return sz;
 }
 
 extern "C" int fs_read_chunk(const char *name, uint32_t offset, uint32_t size,
                              uint8_t *buf, size_t buf_size) {
     if (!g_mounted) return -1;
-    char path[64];
-    if (!build_path(kFilesDir, name, path, sizeof(path))) return -1;
-    File f = SD.open(path, FILE_READ);
-    if (!f) return -1;
-    if (!f.seek(offset)) { f.close(); return -1; }
+
+    File *f = nullptr;
+    bool use_cached = false;
+
+    // Use cached file if it's open and matches the requested name.
+    if (g_read.active && std::strcmp(g_read.name, name) == 0) {
+        f = &g_read.file;
+        use_cached = true;
+    } else {
+        // Fallback to opening a new handle for non-sequential or unmatched reads.
+        // Note: We don't update g_read here because only fs_read_start should initiate the session.
+        char path[64];
+        if (!build_path(kFilesDir, name, path, sizeof(path))) return -1;
+        uint32_t t0 = millis();
+        File opened = SD.open(path, FILE_READ);
+        uint32_t t1 = millis();
+        if (!opened) {
+            std::printf("[filestore] fs_read_chunk ad-hoc open %s failed in %lu ms\r\n", path, (unsigned long)(t1 - t0));
+            return -1;
+        }
+        std::printf("[filestore] fs_read_chunk ad-hoc open %s took %lu ms\r\n", path, (unsigned long)(t1 - t0));
+        f = &opened;
+    }
+
+    uint32_t st0 = millis();
+    if (!f->seek(offset)) {
+        uint32_t st1 = millis();
+        std::printf("[filestore] fs_read_chunk seek failed in %lu ms\r\n", (unsigned long)(st1 - st0));
+        if (!use_cached) f->close();
+        return -1;
+    }
+    uint32_t st1 = millis();
+
     uint32_t to_read = (size < buf_size) ? size : static_cast<uint32_t>(buf_size);
-    int n = f.read(buf, to_read);
-    f.close();
+    uint32_t rt0 = millis();
+    int n = f->read(buf, to_read);
+    uint32_t rt1 = millis();
+
+    uint32_t seek_dur = st1 - st0;
+    uint32_t read_dur = rt1 - rt0;
+    if (seek_dur > 4 || read_dur > 4) {
+        std::printf("[filestore] fs_read_chunk seek=%lu read=%lu ms (offset=%u)\r\n", 
+                    (unsigned long)seek_dur, (unsigned long)read_dur, offset);
+    }
+
+    if (!use_cached) f->close();
     return n < 0 ? -1 : n;
 }
 

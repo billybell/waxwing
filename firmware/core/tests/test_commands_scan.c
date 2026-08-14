@@ -247,25 +247,6 @@ void test_cmd_attestation_write_round_trip(void) {
                 ok.type == CBOR_TYPE_BOOL && ok.arg == 1,
                 "ok=true");
     TEST_ASSERT(attestations_count() == 1, "stored exactly one attestation");
-
-    // Request it back via attestations_get.
-    uint8_t req2[64];
-    uint8_t *p = req2;
-    p += cborencode_map_header(p, 1);
-    p += cborencode_text_str(p, "cmd", 3);
-    p += cborencode_text_str(p, "attestations_get", 16);
-    n = commands_handle(req2, (size_t)(p - req2), out, sizeof(out));
-    cbor_item_t root2, recs;
-    cbor_parse(out, out + n, &root2);
-    TEST_ASSERT(cbor_map_find(root2.data, out + n, root2.arg, "records", &recs) &&
-                recs.type == CBOR_TYPE_ARRAY && recs.arg == 1,
-                "round-tripped via attestations_get");
-    cbor_item_t rec0;
-    TEST_ASSERT(cbor_parse(recs.data, out + n, &rec0) &&
-                rec0.type == CBOR_TYPE_BSTR &&
-                rec0.arg == sizeof(blob) &&
-                memcmp(rec0.data, blob, sizeof(blob)) == 0,
-                "blob bytes preserved");
 }
 
 void test_cmd_attestation_write_missing_blob(void) {

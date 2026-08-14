@@ -91,16 +91,6 @@ void test_peer_gate_companion_only_attestation_write_rejected(void) {
                 "attestation_write rejected on peer characteristic");
 }
 
-void test_peer_gate_companion_only_attestations_get_rejected(void) {
-    mock_fs_clear();
-    uint8_t req[64], out[256];
-    size_t rlen = build_cmd_only(req, "attestations_get");
-    int n = commands_handle_session(COMMANDS_SESSION_PEER, req, rlen, out, sizeof(out));
-    TEST_ASSERT(n > 0, "PEER attestations_get returns response");
-    TEST_ASSERT(response_has_error(out, n, "companion only"),
-                "attestations_get rejected on peer characteristic");
-}
-
 void test_peer_gate_ls_allowed(void) {
     mock_fs_clear();
     uint8_t req[64], out[256];

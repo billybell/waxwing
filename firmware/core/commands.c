@@ -488,84 +488,6 @@ static int cmd_attestation_write(const uint8_t *body, const uint8_t *body_end,
     return emit_ok(out, out_max);
 }
 
-typedef struct {
-    uint32_t skip_remaining;
-    size_t   budget;
-    size_t   used;
-    uint32_t to_emit;
-    uint32_t emitted;
-    uint8_t *p;
-    bool     overflow;
-} attest_walk_t;
-
-static size_t attest_outer_size(size_t blob_len) {
-    if (blob_len <= 23)   return 1 + blob_len;
-    if (blob_len <= 0xFF) return 2 + blob_len;
-    return 3 + blob_len;
-}
-
-static int attest_count_cb(void *ctx, const uint8_t *blob, size_t len) {
-    attest_walk_t *w = (attest_walk_t*)ctx;
-    if (w->skip_remaining > 0) { w->skip_remaining--; return 0; }
-    size_t outer = attest_outer_size(len);
-    if (w->used + outer > w->budget) { w->overflow = true; return 1; }
-    w->used += outer;
-    w->to_emit++;
-    return 0;
-}
-
-static int attest_emit_cb(void *ctx, const uint8_t *blob, size_t len) {
-    attest_walk_t *w = (attest_walk_t*)ctx;
-    if (w->skip_remaining > 0) { w->skip_remaining--; return 0; }
-    if (w->emitted >= w->to_emit) return 1;
-    w->p += cborencode_byte_str(w->p, blob, len);
-    w->emitted++;
-    return 0;
-}
-
-static int cmd_attestations_get(const uint8_t *body, const uint8_t *body_end,
-                                 uint64_t pc, uint8_t *out, size_t out_max) {
-    uint64_t offset_u = 0;
-    cbor_map_get_uint(body, body_end, pc, "offset", &offset_u);
-
-    size_t mtu    = (size_t)ble_get_mtu();
-    size_t budget = (mtu > 3) ? (mtu - 3) : 20;
-    if (budget > out_max) budget = out_max;
-    const size_t ENVELOPE_RESERVE = 32;
-    size_t rec_budget = (budget > ENVELOPE_RESERVE) ? budget - ENVELOPE_RESERVE : 0;
-
-    attest_walk_t w = {
-        .skip_remaining = (uint32_t)offset_u,
-        .budget         = rec_budget,
-    };
-    attestations_for_each(&w, attest_count_cb);
-
-    bool     has_next    = w.overflow;
-    uint32_t next_offset = (uint32_t)offset_u + w.to_emit;
-
-    uint8_t *p = out;
-    p += cborencode_map_header(p, has_next ? 3 : 2);
-    p += cborencode_text_str(p, "ok", 2);
-    p += cborencode_bool(p, 1);
-    p += cborencode_text_str(p, "records", 7);
-    p += cborencode_array_header(p, w.to_emit);
-
-    attest_walk_t emit = {
-        .skip_remaining = (uint32_t)offset_u,
-        .to_emit        = w.to_emit,
-        .p              = p,
-    };
-    attestations_for_each(&emit, attest_emit_cb);
-    p = emit.p;
-
-    if (has_next) {
-        p += cborencode_text_str(p, "next_offset", 11);
-        p += cborencode_uint(p, next_offset);
-    }
-    (void)out_max;
-    return (int)(p - out);
-}
-
 // State for the two-pass walk used by cmd_encounters_get.
 typedef struct {
     uint32_t since_ms;
@@ -885,7 +807,6 @@ int commands_handle_session(commands_session_kind_t kind,
     else if (strcmp(cmd_name, "scan_get") == 0)      rc = cmd_scan_get(body, body_end, pc, out_buf, out_max);
     else if (strcmp(cmd_name, "encounters_get") == 0) rc = cmd_encounters_get(body, body_end, pc, out_buf, out_max);
     else if (strcmp(cmd_name, "attestation_write") == 0) rc = cmd_attestation_write(body, body_end, pc, out_buf, out_max);
-    else if (strcmp(cmd_name, "attestations_get") == 0) rc = cmd_attestations_get(body, body_end, pc, out_buf, out_max);
     else if (strcmp(cmd_name, "attest_query") == 0)  rc = cmd_attest_query(body, body_end, pc, out_buf, out_max);
     else if (strcmp(cmd_name, "attest_ingest") == 0) rc = cmd_attest_ingest(body, body_end, pc, out_buf, out_max);
     else                                             rc = emit_error(out_buf, out_max, "unknown cmd");
